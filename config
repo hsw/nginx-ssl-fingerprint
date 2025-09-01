@@ -23,6 +23,7 @@ fi
 NGX_ADDON_SRCS="$NGX_ADDON_SRCS \
   $ngx_addon_dir/src/nginx_ssl_fingerprint.c \
   $ngx_addon_dir/src/ngx_http_ssl_fingerprint_module.c \
+  $ngx_addon_dir/src/ngx_http_ssl_ja4_module.c \
   $stream_module"
 
 have=NGX_JA3_FINGERPRING_MODULE  . auto/have

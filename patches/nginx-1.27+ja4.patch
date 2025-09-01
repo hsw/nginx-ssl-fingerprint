@@ -1,0 +1,454 @@
+diff --git a/src/event/ngx_event_openssl.c b/src/event/ngx_event_openssl.c
+index 8468101d1..af848401d 100644
+--- a/src/event/ngx_event_openssl.c
++++ b/src/event/ngx_event_openssl.c
+@@ -10,6 +10,7 @@
+ #include <ngx_event.h>
+ 
+ 
++#define NGX_SSL_JA3_BUFFER_SIZE 256 /* = (sizeof(uint16_t) * 128) */
+ #define NGX_SSL_PASSWORD_BUFFER_SIZE  4096
+ 
+ 
+@@ -1778,6 +1779,40 @@ ngx_ssl_get0_session(ngx_connection_t *c)
+     return SSL_get0_session(c->ssl->connection);
+ }
+ 
++int
++ngx_ssl_client_hello_ja3_cb(SSL *s, int *al, void *arg)
++{
++    ngx_connection_t  *c = arg;
++    ngx_str_t         *ja;
++
++    if (c == NULL) {
++        return SSL_CLIENT_HELLO_SUCCESS;
++    }
++
++    if (c->ssl == NULL) {
++        return SSL_CLIENT_HELLO_SUCCESS;
++    }
++
++    ja = &c->ssl->fp_ja3_data;
++    ja->len = NGX_SSL_JA3_BUFFER_SIZE;
++
++    ja->data = ngx_pnalloc(c->pool, c->ssl->fp_ja3_data.len);
++    if (ja->data == NULL) {
++        ja->len = 0;
++        return SSL_CLIENT_HELLO_SUCCESS;
++    }
++
++    ja->len = SSL_client_hello_get_ja3_data(c->ssl->connection, ja->data,
++            NGX_SSL_JA3_BUFFER_SIZE);
++    if (ja->len == 0) {
++        ngx_log_error(NGX_LOG_WARN, c->log, 0, "SSL_client_hello_get_ja3_data "
++                "seems the buffer size is less that number of fileds; "
++                "for this SSL connection can't get a ja3 hash string");
++        ja->data = NULL;
++    }
++
++    return SSL_CLIENT_HELLO_SUCCESS;
++}
+ 
+ ngx_int_t
+ ngx_ssl_set_session(ngx_connection_t *c, ngx_ssl_session_t *session)
+@@ -1792,6 +1827,222 @@ ngx_ssl_set_session(ngx_connection_t *c, ngx_ssl_session_t *session)
+     return NGX_OK;
+ }
+ 
++// adds ciphers to the ssl object for ja4 fingerprint
++ngx_int_t
++ngx_SSL_client_features(ngx_connection_t *c) {
++
++    SSL                           *s = NULL;
++
++    if (c == NULL) {
++        return NGX_ERROR;
++    }
++    s = c->ssl->connection;
++
++    uint8_t  *u_ciphers;
++
++    int tls_cipher_len = SSL_get0_raw_cipherlist (c->ssl->connection, NULL);
++    if (tls_cipher_len == 0) {
++        return NGX_ERROR;
++    }
++
++    int len = SSL_get0_raw_cipherlist (c->ssl->connection, &u_ciphers);
++    len /= tls_cipher_len;
++    if (len == 0) {
++        return NGX_ERROR;
++    }
++
++    c->ssl->ciphers = ngx_pnalloc (c->pool, len * sizeof(char *));
++    if (c->ssl->ciphers == NULL) {
++        return NGX_ERROR;
++    }
++
++    c->ssl->ciphers_sz = 0;
++    for (int i = 0; i < len; i++) {
++        const SSL_CIPHER  *cipher = SSL_CIPHER_find(c->ssl->connection, u_ciphers + i * tls_cipher_len);
++
++        if (!cipher) {
++            continue; // Probably - GREASE value
++        }
++        uint16_t id = SSL_CIPHER_get_id (cipher) & 0xffff;
++        /*
++         * Convert the cipher ID to a hexadecimal string Buffer to
++         * hold the hexadecimal string (4 digits + null terminator)
++         **/
++        char hex_str[5];
++        snprintf (hex_str, sizeof(hex_str), "%04x", id);
++        /* Allocate memory for the hex string and copy it */
++        c->ssl->ciphers [c->ssl->ciphers_sz] = ngx_pnalloc(c->pool, sizeof(hex_str));
++        if (c->ssl->ciphers[c->ssl->ciphers_sz] == NULL) {
++            /* Handle allocation failure */
++            for (size_t j = 0; j < c->ssl->ciphers_sz; j++) {
++                ngx_pfree(c->pool, c->ssl->ciphers[j]);
++            }
++            ngx_pfree(c->pool, c->ssl->ciphers);
++            c->ssl->ciphers = NULL;
++            return NGX_ERROR;
++        }
++        ngx_memcpy (c->ssl->ciphers [c->ssl->ciphers_sz], hex_str, sizeof(hex_str));
++        c->ssl->ciphers_sz++;
++    }
++
++#if (NGX_DEBUG)
++    ngx_log_debug (NGX_LOG_DEBUG_EVENT, c->log, 0, "ja4: unsorted ciphers_suite:");
++    for (int i = 0; i < (int) c->ssl->ciphers_sz; i++)
++        ngx_log_debug2 (NGX_LOG_DEBUG_EVENT, c->log, 0, "-- [%2d]: %s", i, c->ssl->ciphers[i]);
++#endif
++
++    /* Signature Algorithms */
++    int num_sigalgs = SSL_get_sigalgs(s, 0, NULL, NULL, NULL, NULL, NULL);
++    if (num_sigalgs > 0) {
++        // Allocate memory for pointers to strings (each will hold a hex string)
++        char **sigalgs_hex_strings = ngx_pnalloc(c->pool, num_sigalgs * sizeof(char *));
++        if (sigalgs_hex_strings == NULL) {
++            ngx_log_error(NGX_LOG_ERR, c->log, 0, "Failed to allocate memory for signature algorithm hex strings");
++            return NGX_ERROR;
++        }
++
++        for (int i = 0; i < num_sigalgs; ++i) {
++            int psign, phash, psignhash;
++            unsigned char rsig, rhash;
++            SSL_get_sigalgs(s, i, &psign, &phash, &psignhash, &rsig, &rhash);
++
++            // Format as a hexadecimal string
++            char hex_string[5]; // Enough for "XXXX" + null terminator
++            snprintf(hex_string, sizeof(hex_string), "%02x%02x", rhash, rsig);
++
++            // Allocate memory for the hex string
++            sigalgs_hex_strings[i] = ngx_pnalloc(c->pool, sizeof(hex_string));
++            if (sigalgs_hex_strings[i] == NULL) {
++                // Handle allocation failure and clean up previously allocated memory
++                for (int j = 0; j < i; j++) {
++                    ngx_pfree(c->pool, sigalgs_hex_strings[j]);
++                }
++                ngx_pfree(c->pool, sigalgs_hex_strings);
++                sigalgs_hex_strings = NULL;
++                ngx_log_error(NGX_LOG_ERR, c->log, 0, "Failed to allocate memory for a signature algorithm hex string");
++                return NGX_ERROR;
++            }
++
++            // Copy the hex string into allocated memory
++            ngx_memcpy(sigalgs_hex_strings[i], hex_string, sizeof(hex_string));
++        }
++
++        // Save the array of hex strings to your struct
++        c->ssl->sigalgs_hash_values = sigalgs_hex_strings;
++    }
++
++    c->ssl->sigalgs_sz = num_sigalgs;
++    return NGX_OK;
++}
++// adds extensions to the ssl object for ja4 fingerprint
++int
++ngx_SSL_early_cb_fn(SSL *s, int *al, void *arg) {
++
++    int                            got_extensions;
++    int                           *ext_out;
++    size_t                         ext_len;
++
++    // Declare the highest client TLS protocol version
++    int                            highest_supported_tls_client_version;
++
++    const unsigned char           *supported_versions_ext;
++    size_t                         supported_versions_ext_len;
++
++    const unsigned char           *supported_versions;
++
++    ngx_connection_t              *c;
++
++    c = arg;
++
++    if (c == NULL) {
++        return 1;
++    }
++
++    if (c->ssl == NULL) {
++        return 1;
++    }
++
++    c->ssl->extensions_sz = 0;
++    c->ssl->extensions = NULL;
++    got_extensions = SSL_client_hello_getall_extensions_present(s,
++                                                       &ext_out,
++                                                       &ext_len);
++
++    if (!got_extensions) {
++        return 1;
++    }
++    if (!ext_out) {
++        return 1;
++    }
++    if (!ext_len) {
++        return 1;
++    }
++
++    c->ssl->extensions = ngx_palloc(c->pool, sizeof(char *) * ext_len);
++    if (c->ssl->extensions != NULL) {
++        for (size_t i = 0; i < ext_len; i++) {
++            char hex_str[6];  // Buffer to hold the hexadecimal string (4 digits + null terminator)
++            snprintf(hex_str, sizeof(hex_str), "%04x", ext_out[i]);
++
++            // Check for the supported_versions extension (0x002b) in the ClientHello
++            if (ext_out[i] == 0x002b) {
++                ngx_log_debug0(NGX_LOG_DEBUG_EVENT, c->log, 0, "Found supported_versions extension (0x002b)");
++
++                if (SSL_client_hello_get0_ext(s, 0x002b, &supported_versions_ext, &supported_versions_ext_len)) {
++                    if (supported_versions_ext_len < 3) {
++                        ngx_log_debug0(NGX_LOG_DEBUG_EVENT, c->log, 0, "supported_versions extension too short");
++                        highest_supported_tls_client_version = SSL_client_hello_get0_legacy_version(s);
++                    } else {
++                        size_t list_len = supported_versions_ext[0];
++                        if (list_len + 1 > supported_versions_ext_len) {
++                            ngx_log_debug0(NGX_LOG_DEBUG_EVENT, c->log, 0, "supported_versions length mismatch");
++                            highest_supported_tls_client_version = SSL_client_hello_get0_legacy_version(s);
++                        } else {
++                            supported_versions = supported_versions_ext + 1;
++                            highest_supported_tls_client_version = 0;
++                            for (size_t j = 0; j + 1 < list_len; j += 2) {
++                                int version = (supported_versions[j] << 8) | supported_versions[j + 1];
++                                // skip GREASE values (RFC 8701)
++                                if ((version & 0x0f0f) == 0x0a0a) continue;
++                                if (version > highest_supported_tls_client_version) {
++                                    highest_supported_tls_client_version = version;
++                                }
++                            }
++                            // fallback if all were GREASE
++                            if (highest_supported_tls_client_version == 0) {
++                                highest_supported_tls_client_version = SSL_client_hello_get0_legacy_version(s);
++                            }
++                        }
++                    }
++                    c->ssl->highest_supported_tls_client_version = highest_supported_tls_client_version;
++                    ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "Highest TLS protocol version found: %04x", highest_supported_tls_client_version);
++                }
++            }
++
++            // Allocate memory for the hex string and copy it
++            c->ssl->extensions[i] = ngx_pnalloc(c->pool, sizeof(hex_str));
++            if (c->ssl->extensions[i] == NULL) {
++                // Handle allocation failure and clean up previously allocated memory
++                for (size_t j = 0; j < i; j++) {
++                    ngx_pfree(c->pool, c->ssl->extensions[j]);
++                }
++                ngx_pfree(c->pool, c->ssl->extensions);
++                c->ssl->extensions = NULL;
++                return 1;
++            }
++            ngx_memcpy(c->ssl->extensions[i], hex_str, sizeof(hex_str));
++        }
++        c->ssl->extensions_sz = ext_len;
++    }
++
++    for (size_t i = 0; i < ext_len; i++) {
++        ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0, "c->ssl->extensions[%zu] = %s", i, c->ssl->extensions[i]);
++    }
++
++    OPENSSL_free(ext_out);
++
++    return 1;
++}
+ 
+ ngx_int_t
+ ngx_ssl_handshake(ngx_connection_t *c)
+@@ -1812,12 +2063,19 @@ ngx_ssl_handshake(ngx_connection_t *c)
+ 
+     ngx_ssl_clear_error(c->log);
+ 
++    // client hello callback function on the session context, ja4 extensions
++    SSL_CTX_set_client_hello_cb(c->ssl->session_ctx, ngx_SSL_early_cb_fn, c);
++
++    (void) SSL_CTX_set_client_hello_cb(c->ssl->session_ctx,
++                                ngx_ssl_client_hello_ja3_cb, c);
++
+     n = SSL_do_handshake(c->ssl->connection);
+ 
+-    ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "SSL_do_handshake: %d", n);
+ 
++    ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "SSL_do_handshake: %d", n);
+     if (n == 1) {
+-
++        // ja4 cipher suites
++        ngx_SSL_client_features(c);
+         if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
+             return NGX_ERROR;
+         }
+diff --git a/src/event/ngx_event_openssl.h b/src/event/ngx_event_openssl.h
+index c062f912c..b02f4d79e 100644
+--- a/src/event/ngx_event_openssl.h
++++ b/src/event/ngx_event_openssl.h
+@@ -128,6 +128,32 @@ struct ngx_ssl_connection_s {
+     unsigned                    in_ocsp:1;
+     unsigned                    early_preread:1;
+     unsigned                    write_blocked:1;
++
++    /* ja3 */
++    ngx_str_t                   fp_ja3_data;
++    ngx_str_t                   fp_ja3_str;
++    ngx_str_t                   fp_ja3_hash;
++    uint16_t                    fp_tls_greased;
++
++    /* ja4 */
++    int             version;
++    int             highest_supported_tls_client_version;
++
++    size_t          ciphers_sz;
++    char          **ciphers;
++
++    size_t          extensions_sz;
++    char          **extensions;
++
++    size_t          sigalgs_sz;
++    char          **sigalgs_hash_values;
++    char           *first_alpn;
++
++    /* ja4l */
++    uint16_t  handshake_roundtrip_microseconds;
++    uint8_t   ttl;
++
++    /* ja3 */
+ };
+ 
+ 
+diff --git a/src/http/modules/ngx_http_ssl_module.c b/src/http/modules/ngx_http_ssl_module.c
+index 1c92d9fa8..3e5f03fdf 100644
+--- a/src/http/modules/ngx_http_ssl_module.c
++++ b/src/http/modules/ngx_http_ssl_module.c
+@@ -431,6 +431,13 @@ ngx_http_ssl_alpn_select(ngx_ssl_conn_t *ssl_conn, const unsigned char **out,
+     ngx_connection_t        *c;
+ 
+     c = ngx_ssl_get_connection(ssl_conn);
++    // add first alpn value for ja4 to c->ssl
++    if (c->ssl->first_alpn == NULL) {
++        c->ssl->first_alpn = ngx_palloc(c->pool, in[0] + 1);
++        // number of bytes for alpn is stored in in[0]
++        ngx_memcpy(c->ssl->first_alpn, &in[1], in[0]);
++        c->ssl->first_alpn[in[0]] = '\0';
++    }
+ #endif
+ 
+ #if (NGX_DEBUG)
+diff --git a/src/http/v2/ngx_http_v2.c b/src/http/v2/ngx_http_v2.c
+index 7c05ff1e7..21b4a9a5c 100644
+--- a/src/http/v2/ngx_http_v2.c
++++ b/src/http/v2/ngx_http_v2.c
+@@ -301,6 +301,8 @@ ngx_http_v2_init(ngx_event_t *rev)
+         ngx_add_timer(rev, cscf->client_header_timeout);
+     }
+ 
++    h2c->fp_fingerprinted = 0;
++
+     c->idle = 1;
+     ngx_reusable_connection(c, 0);
+ 
+@@ -1345,6 +1347,14 @@ ngx_http_v2_state_headers(ngx_http_v2_connection_t *h2c, u_char *pos,
+         }
+     }
+ 
++    if (!h2c->fp_fingerprinted && h2c->fp_priorities.len < 32) {
++        h2c->fp_priorities.data[h2c->fp_priorities.len] = (uint8_t)stream->node->id;
++        h2c->fp_priorities.data[h2c->fp_priorities.len+1] = (uint8_t)excl;
++        h2c->fp_priorities.data[h2c->fp_priorities.len+2] = (uint8_t)depend;
++        h2c->fp_priorities.data[h2c->fp_priorities.len+3] = (uint8_t)(weight-1);
++        h2c->fp_priorities.len += 4;
++    }
++
+     return ngx_http_v2_state_header_block(h2c, pos, end);
+ 
+ rst_stream:
+@@ -1762,6 +1772,9 @@ ngx_http_v2_state_process_header(ngx_http_v2_connection_t *h2c, u_char *pos,
+     }
+ 
+     if (header->name.data[0] == ':') {
++        if (!h2c->fp_fingerprinted && h2c->fp_pseudoheaders.len < 32 && header->name.len > 1)
++            h2c->fp_pseudoheaders.data[h2c->fp_pseudoheaders.len++] = header->name.data[1];
++
+         rc = ngx_http_v2_pseudo_header(r, header);
+ 
+         if (rc == NGX_OK) {
+@@ -2181,6 +2194,12 @@ ngx_http_v2_state_settings_params(ngx_http_v2_connection_t *h2c, u_char *pos,
+         ngx_log_debug2(NGX_LOG_DEBUG_HTTP, h2c->connection->log, 0,
+                        "http2 setting %ui:%ui", id, value);
+ 
++        if (!h2c->fp_fingerprinted && h2c->fp_settings.len < 32) {
++            h2c->fp_settings.data[h2c->fp_settings.len] = (uint8_t)id;
++            *(uint32_t*)(h2c->fp_settings.data + h2c->fp_settings.len + 1)  = (uint32_t)value;
++            h2c->fp_settings.len += 5;
++        }
++
+         switch (id) {
+ 
+         case NGX_HTTP_V2_INIT_WINDOW_SIZE_SETTING:
+@@ -2465,6 +2484,9 @@ ngx_http_v2_state_window_update(ngx_http_v2_connection_t *h2c, u_char *pos,
+     }
+ 
+     h2c->send_window += window;
++    if (!h2c->fp_fingerprinted) {
++        h2c->fp_windowupdate = window;
++    }
+ 
+     while (!ngx_queue_empty(&h2c->waiting)) {
+         q = ngx_queue_head(&h2c->waiting);
+diff --git a/src/http/v2/ngx_http_v2.h b/src/http/v2/ngx_http_v2.h
+index cb9014ccf..1e09e6b96 100644
+--- a/src/http/v2/ngx_http_v2.h
++++ b/src/http/v2/ngx_http_v2.h
+@@ -17,6 +17,8 @@
+ 
+ #define NGX_HTTP_V2_STATE_BUFFER_SIZE    16
+ 
++#define NGX_FP_V2_BUFFER_SIZE            32
++
+ #define NGX_HTTP_V2_DEFAULT_FRAME_SIZE   (1 << 14)
+ #define NGX_HTTP_V2_MAX_FRAME_SIZE       ((1 << 24) - 1)
+ 
+@@ -121,6 +123,12 @@ typedef struct {
+ } ngx_http_v2_hpack_t;
+ 
+ 
++typedef struct {
++  u_char data[NGX_FP_V2_BUFFER_SIZE];
++  size_t len;
++} ngx_http_v2_fp_fixed_str_t;
++
++
+ struct ngx_http_v2_connection_s {
+     ngx_connection_t                *connection;
+     ngx_http_connection_t           *http_connection;
+@@ -166,6 +174,13 @@ struct ngx_http_v2_connection_s {
+     unsigned                         table_update:1;
+     unsigned                         blocked:1;
+     unsigned                         goaway:1;
++
++    unsigned                         fp_fingerprinted:1;
++    ngx_http_v2_fp_fixed_str_t       fp_settings,
++                                     fp_priorities,
++                                     fp_pseudoheaders;
++    ngx_uint_t                       fp_windowupdate;
++    ngx_str_t                        fp_str;
+ };
+ 
+ 
