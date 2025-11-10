@@ -14,51 +14,51 @@
  */
 static ngx_http_variable_t ngx_http_ssl_ja4_variables_list[] = {
 
-    {ngx_string("http_ssl_ja4"),
+    {ngx_string("ssl_ja4"),
      NULL,
      ngx_http_ssl_ja4,
      0, 0, 0},
-    {ngx_string("http_ssl_ja4_string"),
+    {ngx_string("ssl_ja4_string"),
      NULL,
      ngx_http_ssl_ja4_string,
      0, 0, 0},
-    {ngx_string("http_ssl_ja4one"),
+    {ngx_string("ssl_ja4one"),
      NULL,
      ngx_http_ssl_ja4one,
      0, 0, 0},
-    {ngx_string("http_ssl_ja4s"),
+    {ngx_string("ssl_ja4s"),
      NULL,
      ngx_http_ssl_ja4s,
      0, 0, 0},
-    {ngx_string("http_ssl_ja4s_string"),
+    {ngx_string("ssl_ja4s_string"),
      NULL,
      ngx_http_ssl_ja4s_string,
      0, 0, 0},
-    {ngx_string("http_ssl_ja4h"),
+    {ngx_string("ssl_ja4h"),
      NULL,
      ngx_http_ssl_ja4h,
      0, 0, 0},
-    {ngx_string("http_ssl_ja4h_string"),
+    {ngx_string("ssl_ja4h_string"),
      NULL,
      ngx_http_ssl_ja4h_string,
      0, 0, 0},
-    {ngx_string("http_ssl_ja4t"),
+    {ngx_string("ssl_ja4t"),
      NULL,
      ngx_http_ssl_ja4t,
      0, 0, 0},
-    {ngx_string("http_ssl_ja4t_string"),
+    {ngx_string("ssl_ja4t_string"),
      NULL,
      ngx_http_ssl_ja4t_string,
      0, 0, 0},
-    {ngx_string("http_ssl_ja4ts"),
+    {ngx_string("ssl_ja4ts"),
      NULL,
      ngx_http_ssl_ja4ts,
      0, 0, 0},
-    {ngx_string("http_ssl_ja4ts_string"),
+    {ngx_string("ssl_ja4ts_string"),
      NULL,
      ngx_http_ssl_ja4ts_string,
      0, 0, 0},
-    {ngx_string("http_ssl_ja4l"),
+    {ngx_string("ssl_ja4l"),
      NULL,
      ngx_http_ssl_ja4l,
      0, 0, 0},
@@ -173,114 +173,74 @@ int ngx_ssl_ja4(ngx_connection_t *c, ngx_pool_t *pool, ngx_ssl_ja4_t *ja4)
         // Add c->ssl->ciphers to ja4->ciphers
         for (i = 0; i < c->ssl->ciphers_sz; ++i)
         {
-            size_t hex_str_len = strlen(c->ssl->ciphers[i]) + 1; // +1 for null terminator
-
-            // Allocate memory for the hex string and copy it
+            size_t hex_str_len = strlen(c->ssl->ciphers[i]) + 1;
             ja4->ciphers[ja4->ciphers_sz] = ngx_pnalloc(pool, hex_str_len);
-            if (ja4->ciphers[ja4->ciphers_sz] == NULL)
-            {
-                // Handle allocation failure and clean up previously allocated memory
-                for (size_t j = 0; j < ja4->ciphers_sz; j++)
-                {
-                    ngx_pfree(pool, ja4->ciphers[j]);
-                }
-                ngx_pfree(pool, ja4->ciphers);
-                ja4->ciphers = NULL;
+            if (ja4->ciphers[ja4->ciphers_sz] == NULL) {
                 return NGX_DECLINED;
             }
-            ngx_memcpy(ja4->ciphers[ja4->ciphers_sz], c->ssl->ciphers[i], hex_str_len);
+            ngx_memcpy(ja4->ciphers[ja4->ciphers_sz],
+                       c->ssl->ciphers[i],
+                       hex_str_len);
             ja4->ciphers_sz++;
         }
-
-        /* Now, let's sort the ja4->ciphers array */
         qsort(ja4->ciphers, ja4->ciphers_sz, sizeof(char *), compare_hexes);
     }
 
-    // Check if we got ciphers
-    if (ja4->ciphers && ja4->ciphers_sz)
-    {
-        // SHA256_DIGEST_LENGTH should be 32 bytes (256 bits)
+    if (ja4->ciphers && ja4->ciphers_sz) {
         unsigned char hash_result[SHA256_DIGEST_LENGTH];
-        // Declare a context structure needed by OpenSSL to compute hash
         SHA256_CTX sha256;
-        // Initialize the context
         SHA256_Init(&sha256);
-
-        // Iterate each cipher and add data to the context
         for (i = 0; i < ja4->ciphers_sz; i++)
         {
             SHA256_Update(&sha256, ja4->ciphers[i], strlen(ja4->ciphers[i]));
-            // Add a comma separator between ciphers
-            if (i < ja4->ciphers_sz - 1)
-            {
+            if (i < ja4->ciphers_sz - 1) {
                 SHA256_Update(&sha256, ",", 1);
             }
         }
-        // Compute hash, stored in hash_result
         SHA256_Final(hash_result, &sha256);
-        // Convert the hash result to hex
-        for (i = 0; i < SHA256_DIGEST_LENGTH; i++)
-        {
+
+        for (i = 0; i < SHA256_DIGEST_LENGTH; i++) {
             sprintf(&ja4->cipher_hash[i * 2], "%02x", hash_result[i]);
         }
-        ja4->cipher_hash[2 * SHA256_DIGEST_LENGTH] = '\0'; // Null-terminate the hex string
-
-        // Copy the first 6 bytes (12 characters) for the truncated hash
+        ja4->cipher_hash[2 * SHA256_DIGEST_LENGTH] = '\0';
         ngx_memcpy(ja4->cipher_hash_truncated, ja4->cipher_hash, 12);
-        ja4->cipher_hash_truncated[12] = '\0'; // Null-terminate the truncated hex string
+        ja4->cipher_hash_truncated[12] = '\0';
     }
 
-    /* Extensions */
     ja4->extensions = NULL;
     ja4->extensions_sz = 0;
     ja4->extensions_count = 0;
 
-    // extensions_no_psk
-    // no need for sz here bc not counting ignored extensions
     ja4->extensions_no_psk = NULL;
     ja4->extensions_no_psk_count = 0;
-    if (c->ssl->extensions_sz && c->ssl->extensions)
-    {
+
+    if (c->ssl->extensions_sz && c->ssl->extensions) {
         len = c->ssl->extensions_sz * sizeof(char *);
         ja4->extensions = ngx_pnalloc(pool, len);
         ja4->extensions_no_psk = ngx_pnalloc(pool, len);
-        if (ja4->extensions == NULL)
-        {
+        if (ja4->extensions == NULL) {
             return NGX_DECLINED;
         }
-        for (i = 0; i < c->ssl->extensions_sz; ++i)
-        {
-            if (!ngx_ssl_ja4_is_ext_greased(c->ssl->extensions[i]))
 
-            {
+        for (i = 0; i < c->ssl->extensions_sz; ++i) {
+            if (!ngx_ssl_ja4_is_ext_greased(c->ssl->extensions[i])) {
                 char *ext = c->ssl->extensions[i];
-                size_t ext_len = strlen(ext) + 1; // +1 for null terminator
+                size_t ext_len = strlen(ext) + 1;
 
                 ja4->extensions_count++;
 
-                // ignored extensions are only counted, not hashed
                 if (!ngx_ssl_ja4_is_ext_ignored(c->ssl->extensions[i]))
                 {
-
-                    // Allocate memory for the extension string and copy it
                     ja4->extensions[ja4->extensions_sz] = ngx_pnalloc(pool, ext_len);
-                    if (ja4->extensions[ja4->extensions_sz] == NULL)
-                    {
-                        // Handle allocation failure and clean up previously allocated memory
-                        for (size_t j = 0; j < ja4->extensions_sz; j++)
-                        {
-                            ngx_pfree(pool, ja4->extensions[j]);
-                        }
-                        ngx_pfree(pool, ja4->extensions);
+                    if (ja4->extensions[ja4->extensions_sz] == NULL) {
                         ja4->extensions = NULL;
                         return NGX_DECLINED;
                     }
                     ngx_memcpy(ja4->extensions[ja4->extensions_sz], ext, ext_len);
                     ja4->extensions_sz++;
                 }
-                // for no psk ignored extensions are not counted, not hashed
-                if (ngx_ssl_ja4_is_ext_ignored(c->ssl->extensions[i]))
-                {
+
+                if (ngx_ssl_ja4_is_ext_ignored(c->ssl->extensions[i])) {
                     continue;
                 }
                 // check if the extension is not a PSK extension
@@ -412,36 +372,31 @@ int ngx_ssl_ja4(ngx_connection_t *c, ngx_pool_t *pool, ngx_ssl_ja4_t *ja4)
 
         for (i = 0; i < ja4->extensions_no_psk_count; i++)
         {
-            SHA256_Update(&sha256_psk, ja4->extensions_no_psk[i], strlen(ja4->extensions_no_psk[i]));
-            // add comma separator if not last val
-            if (i < ja4->extensions_no_psk_count - 1)
-            {
+            SHA256_Update(&sha256_psk,
+                            ja4->extensions_no_psk[i],
+                            strlen(ja4->extensions_no_psk[i]));
+            if (i < ja4->extensions_no_psk_count - 1) {
                 SHA256_Update(&sha256_psk, ",", 1);
             }
         }
 
         SHA256_Final(hash_result, &sha256_psk);
-
-        // Convert the full hash to hexadecimal (human readable) format
-        char hex_hash[2 * SHA256_DIGEST_LENGTH + 1]; // +1 for null-terminator
-        for (i = 0; i < SHA256_DIGEST_LENGTH; i++)
-        {
+        char hex_hash[2 * SHA256_DIGEST_LENGTH + 1];
+        for (i = 0; i < SHA256_DIGEST_LENGTH; i++) {
             sprintf(hex_hash + 2 * i, "%02x", hash_result[i]);
         }
         ngx_memcpy(ja4->extension_hash_no_psk, hex_hash, 2 * SHA256_DIGEST_LENGTH);
 
-        // Convert the truncated hash to hexadecimal format
-        char hex_hash_truncated[2 * 6 + 1]; // 6 bytes, 2 characters each = 12 characters plus null-terminator
-        for (i = 0; i < 6; i++)
-        {
+        char hex_hash_truncated[2 * 6 + 1];
+        for (i = 0; i < 6; i++) {
             sprintf(hex_hash_truncated + 2 * i, "%02x", hash_result[i]);
         }
-        // Copy the first 6 bytes (12 characters) for the truncated hash
         ngx_memcpy(ja4->extension_hash_no_psk_truncated, hex_hash_truncated, 12);
         ja4->extension_hash_no_psk_truncated[12] = '\0';
     }
     return NGX_OK;
 }
+
 void ngx_ssl_ja4_fp(ngx_pool_t *pool, ngx_ssl_ja4_t *ja4, ngx_str_t *out)
 {
     // this function uses stuff on the ja4 struct to create a fingerprint
