@@ -29,7 +29,7 @@ A high performance nginx module for ja3 and http2 fingerprint.
 | http_ssl_ja3      | NULL          | The ja3 fingerprint.     |
 | http_ssl_ja3_hash | NULL          | The ja3 fingerprint hash.|
 | http2_fingerprint | NULL          | The http2 fingerprint.   |
-| http_ssl_ja4      | NULL          | The JA4 fingerprint hash.|
+| http_ssl_ja4      | NULL          | The JA4 TLS client fingerprint.|
 | http_ssl_ja4_r    | NULL          | The JA4 fingerprint raw (sorted).|
 
 #### Example
@@ -48,15 +48,17 @@ http {
 
 ### Stream module variables
 
-> **Note:** JA4 is not available in the stream module. JA4 requires HTTP-level data
-> (ALPN negotiation) that is only accessible in the HTTP module. The stream module
-> supports JA3 fingerprinting only.
+> **Note:** For JA4 ALPN detection to work in the stream module, the `ssl_alpn` directive
+> must be configured in the stream block. Without `ssl_alpn`, the ALPN portion of the
+> JA4 fingerprint will be "00".
 
 | Name                | Default Value | Comments                 |
 | ------------------- | ------------- | ------------------------ |
 | stream_ssl_greased  | 0             | TLS greased flag.        |
 | stream_ssl_ja3      | NULL          | The ja3 fingerprint.     |
 | stream_ssl_ja3_hash | NULL          | The ja3 fingerprint hash.|
+| stream_ssl_ja4      | NULL          | The JA4 TLS client fingerprint.|
+| stream_ssl_ja4_r    | NULL          | The JA4 fingerprint raw (sorted).|
 
 #### Example
 
@@ -66,8 +68,9 @@ stream {
         listen                 127.0.0.1:4443 ssl;
         ssl_certificate        cert.pem;
         ssl_certificate_key    priv.key;
+        ssl_alpn               h2 http/1.1;  # required for JA4 ALPN detection
         error_log              /dev/stderr debug;
-        return                 "ja3: $stream_ssl_ja3\n";
+        return                 "ja3: $stream_ssl_ja3\nja4: $stream_ssl_ja4\n";
     }
 }
 ```
