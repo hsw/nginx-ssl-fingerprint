@@ -202,7 +202,7 @@ unsigned char *append_uint32(unsigned char* dst, uint32_t n)
  */
 int ngx_ssl_ja3(ngx_connection_t *c)
 {
-    u_char *ptr = NULL, *data = NULL;
+    u_char *ptr = NULL, *data = NULL, *end;
     size_t num = 0, i;
     uint16_t n, greased = 0;
 
@@ -224,6 +224,9 @@ int ngx_ssl_ja3(ngx_connection_t *c)
         return NGX_OK;
     }
 
+    end = data + c->ssl->fp_ja3_data.len;
+
+    /* *4: formats section has 1-byte entries, max 3 digits + separator = 4 chars */
     c->ssl->fp_ja3_str.len = c->ssl->fp_ja3_data.len * 4;
     c->ssl->fp_ja3_str.data = ngx_pnalloc(c->pool, c->ssl->fp_ja3_str.len);
     if (c->ssl->fp_ja3_str.data == NULL) {
@@ -236,12 +239,21 @@ int ngx_ssl_ja3(ngx_connection_t *c)
 
     /* version */
     ptr = c->ssl->fp_ja3_str.data;
+    if (data + 2 > end) {
+        return NGX_ERROR;
+    }
     ptr = append_uint16(ptr, *(uint16_t*)data);
     *ptr++ = ',';
     data += 2;
 
     /* ciphers */
+    if (data + 2 > end) {
+        return NGX_ERROR;
+    }
     num = *(uint16_t*)data;
+    if (data + 2 + num > end) {
+        return NGX_ERROR;
+    }
     for (i = 2; i <= num; i += 2) {
         n = ((uint16_t)data[i]) << 8 | ((uint16_t)data[i+1]);
         if (!IS_GREASE_CODE(n)) {
@@ -258,7 +270,13 @@ int ngx_ssl_ja3(ngx_connection_t *c)
     data += 2 + num;
 
     /* extensions */
+    if (data + 2 > end) {
+        return NGX_ERROR;
+    }
     num = *(uint16_t*)data;
+    if (data + 2 + num > end) {
+        return NGX_ERROR;
+    }
     for (i = 2; i <= num; i += 2) {
         n = *(uint16_t*)(data+i);
         if (!IS_GREASE_CODE(n)) {
@@ -275,7 +293,13 @@ int ngx_ssl_ja3(ngx_connection_t *c)
 
 
     /* groups */
+    if (data + 2 > end) {
+        return NGX_ERROR;
+    }
     num = *(uint16_t*)data;
+    if (data + num > end) {
+        return NGX_ERROR;
+    }
     for (i = 2; i + 1 < num; i += 2) {
         n = ((uint16_t)data[i]) << 8 | ((uint16_t)data[i+1]);
         if (!IS_GREASE_CODE(n)) {
@@ -291,7 +315,13 @@ int ngx_ssl_ja3(ngx_connection_t *c)
     }
 
     /* formats */
+    if (data + 1 > end) {
+        return NGX_ERROR;
+    }
     num = *(uint8_t*)data;
+    if (data + num > end) {
+        return NGX_ERROR;
+    }
     for (i = 1; i < num; i++) {
         ptr = append_uint16(ptr, (uint16_t)data[i]);
         *ptr++ = '-';
@@ -389,7 +419,7 @@ ngx_ssl_ja4_hex_list(u_char *p, const uint16_t *arr, size_t count)
     return p;
 }
 
-static ngx_inline ngx_uint_t
+static inline ngx_uint_t
 ngx_ssl_ja4_is_alnum(u_char c)
 {
     return ((c >= '0' && c <= '9') ||
@@ -538,7 +568,7 @@ int ngx_ssl_ja4(ngx_connection_t *c)
 
     /* ALPN first/last character */
     {
-        const char *alpn = c->ssl->fp_first_alpn;
+        const u_char *alpn = c->ssl->fp_first_alpn;
 
         if (alpn == NULL || alpn[0] == '\0') {
             *p++ = '0';
@@ -725,7 +755,11 @@ int ngx_http2_fingerprint(ngx_connection_t *c, ngx_http_v2_connection_t *h2c)
         pstr = append_uint32(pstr, *(uint32_t*)(h2c->fp_settings.data+i+1));
         *pstr++ = ';';
     }
-    *(pstr-1) = '|';
+    if (h2c->fp_settings.len > 0) {
+        *(pstr-1) = '|';
+    } else {
+        *pstr++ = '|';
+    }
 
     /* windows update */
     pstr = append_uint32(pstr, h2c->fp_windowupdate);
@@ -742,7 +776,11 @@ int ngx_http2_fingerprint(ngx_connection_t *c, ngx_http_v2_connection_t *h2c)
         pstr = append_uint16(pstr, (uint16_t)h2c->fp_priorities.data[i+3]+1);
         *pstr++ = ',';
     }
-    *(pstr-1) = '|';
+    if (h2c->fp_priorities.len > 0) {
+        *(pstr-1) = '|';
+    } else {
+        *pstr++ = '|';
+    }
 
     /* fp_pseudoheaders */
     for (i = 0; i < h2c->fp_pseudoheaders.len; i++) {
@@ -751,7 +789,11 @@ int ngx_http2_fingerprint(ngx_connection_t *c, ngx_http_v2_connection_t *h2c)
     }
 
     /* null terminator */
-    *--pstr = 0;
+    if (h2c->fp_pseudoheaders.len > 0) {
+        *--pstr = 0;
+    } else {
+        *pstr = 0;
+    }
 
     h2c->fp_str.len = pstr - h2c->fp_str.data;
 
