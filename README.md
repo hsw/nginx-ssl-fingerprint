@@ -17,6 +17,16 @@ A high performance nginx module for ja3 and http2 fingerprint.
 | nginx-1.24 | ✅ | ✅ | ✅ | ✅ | |
 | nginx-1.25 | ✅ | ✅ | ✅ | ✅ | |
 | nginx-1.27 |     |    |    |    | ✅ |
+| nginx-1.29 |     |    |    |    | ✅ |
+
+#### JA3 + JA4 + HTTP/2
+
+|            | openssl-3.4 | openssl-3.5 |
+| -----------| ----------- | ----------- |
+| nginx-1.27 | ✅          |             |
+| nginx-1.29 |             | ✅          |
+
+JA4 support requires the `+ja4` patch variants for both nginx and OpenSSL.
 
 ## Configuration
 
@@ -29,6 +39,17 @@ A high performance nginx module for ja3 and http2 fingerprint.
 | http_ssl_ja3_hash | NULL          | The ja3 fingerprint hash.|
 | http2_fingerprint | NULL          | The http2 fingerprint.   |
 
+### HTTP module variables — JA4
+
+| Name                  | Default Value | Comments                          |
+| --------------------- | ------------- | --------------------------------- |
+| ssl_ja4               | NULL          | JA4 fingerprint (hash format).    |
+| ssl_ja4_string        | NULL          | JA4 fingerprint (full string).    |
+| ssl_ja4one            | NULL          | JA4 without PSK extension.        |
+| ssl_ja4l              | NULL          | JA4L network layer fingerprint.   |
+
+JA4 variables are available when using the `+ja4` patch variants.
+
 #### Example
 
 ```nginx
@@ -38,7 +59,7 @@ http {
         ssl_certificate        cert.pem;
         ssl_certificate_key    priv.key;
         error_log              /dev/stderr debug;
-        return                 200 "ja3: $http_ssl_ja3\nh2fp: $http2_fingerprint";
+        return                 200 "ja3: $http_ssl_ja3\nh2fp: $http2_fingerprint\nja4: $ssl_ja4\n";
     }
 }
 ```
@@ -100,6 +121,25 @@ $ python3 -m venv venv
 $ venv/bin/pip install --pre tlslite-ng
 $ PYTHONPATH=. venv/bin/python scripts/test-client-hello-max-size.py
 
+```
+
+### JA3 + JA4
+
+```bash
+$ git clone -b openssl-3.5.6 --depth=1 https://github.com/openssl/openssl
+$ git clone -b release-1.29.8 --depth=1 https://github.com/nginx/nginx
+$ git clone -b ja4-fingerprint https://github.com/phuslu/nginx-ssl-fingerprint
+
+$ patch -p1 -d openssl < nginx-ssl-fingerprint/patches/openssl.openssl-3.5+ja4.patch
+$ patch -p1 -d nginx < nginx-ssl-fingerprint/patches/nginx-1.29+ja4.patch
+
+$ cd nginx
+$ ./auto/configure --with-openssl=$(pwd)/../openssl --add-module=$(pwd)/../nginx-ssl-fingerprint \
+    --with-http_ssl_module --with-stream_ssl_module --with-stream --with-http_v2_module
+$ make
+
+$ objs/nginx -p . -c $(pwd)/../nginx-ssl-fingerprint/nginx.conf
+$ curl -k https://127.0.0.1:4433
 ```
 
 ## Peformance
