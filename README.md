@@ -13,6 +13,12 @@ A high performance nginx module for ja3 and http2 fingerprint.
 | nginx-1.29.8 |    ✅        |     ✅        |               |
 | nginx-1.30.0 |    ✅        |     ✅        |               |
 
+#### JA4 + HTTP/2 Support
+
+|              | openssl-3.5.6 |
+| ------------ | ------------- |
+| nginx-1.29.8 |    ✅         |
+
 ## Configuration
 
 ### HTTP module variables
@@ -23,6 +29,8 @@ A high performance nginx module for ja3 and http2 fingerprint.
 | http_ssl_ja3      | NULL          | The ja3 fingerprint.     |
 | http_ssl_ja3_hash | NULL          | The ja3 fingerprint hash.|
 | http2_fingerprint | NULL          | The http2 fingerprint.   |
+| http_ssl_ja4      | NULL          | The JA4 fingerprint hash.|
+| http_ssl_ja4_r    | NULL          | The JA4 fingerprint raw (sorted).|
 
 #### Example
 
@@ -33,12 +41,16 @@ http {
         ssl_certificate        cert.pem;
         ssl_certificate_key    priv.key;
         error_log              /dev/stderr debug;
-        return                 200 "ja3: $http_ssl_ja3\nh2fp: $http2_fingerprint";
+        return                 200 "ja3: $http_ssl_ja3\nja4: $http_ssl_ja4\nja4_r: $http_ssl_ja4_r\nh2fp: $http2_fingerprint";
     }
 }
 ```
 
 ### Stream module variables
+
+> **Note:** JA4 is not available in the stream module. JA4 requires HTTP-level data
+> (ALPN negotiation) that is only accessible in the HTTP module. The stream module
+> supports JA3 fingerprinting only.
 
 | Name                | Default Value | Comments                 |
 | ------------------- | ------------- | ------------------------ |
@@ -94,6 +106,36 @@ $ cd tlsfuzzer
 $ python3 -m venv venv
 $ venv/bin/pip install --pre tlslite-ng
 $ PYTHONPATH=. venv/bin/python scripts/test-client-hello-max-size.py
+
+```
+
+## Quick Start (JA3 + JA4)
+
+Build with both JA3 and JA4 support using nginx 1.29 + OpenSSL 3.5:
+
+```bash
+
+# Clone
+
+$ git clone -b openssl-3.5 --depth=1 https://github.com/openssl/openssl
+$ git clone -b release-1.29.8 --depth=1 https://github.com/nginx/nginx
+$ git clone -b ja4 https://github.com/phuslu/nginx-ssl-fingerprint
+
+# Patch
+
+$ patch -p1 -d openssl < nginx-ssl-fingerprint/patches/openssl.openssl-3.5+ja4.patch
+$ patch -p1 -d nginx < nginx-ssl-fingerprint/patches/nginx-1.29+ja4.patch
+
+# Build
+
+$ cd nginx
+$ ASAN_OPTIONS=symbolize=1 ./auto/configure --with-openssl=$(pwd)/../openssl --add-module=$(pwd)/../nginx-ssl-fingerprint --with-http_ssl_module --with-stream_ssl_module --with-debug --with-stream --with-http_v2_module --with-cc-opt="-fsanitize=address -O -fno-omit-frame-pointer" --with-ld-opt="-L/usr/local/lib -Wl,-E -lasan"
+$ make
+
+# Test
+
+$ objs/nginx -p . -c $(pwd)/../nginx-ssl-fingerprint/nginx.conf
+$ curl -k https://127.0.0.1:4433
 
 ```
 
