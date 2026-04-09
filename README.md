@@ -48,10 +48,6 @@ http {
 
 ### Stream module variables
 
-> **Note:** For JA4 ALPN detection to work in the stream module, the `ssl_alpn` directive
-> must be configured in the stream block. Without `ssl_alpn`, the ALPN portion of the
-> JA4 fingerprint will be "00".
-
 | Name                | Default Value | Comments                 |
 | ------------------- | ------------- | ------------------------ |
 | stream_ssl_greased  | 0             | TLS greased flag.        |
@@ -68,7 +64,6 @@ stream {
         listen                 127.0.0.1:4443 ssl;
         ssl_certificate        cert.pem;
         ssl_certificate_key    priv.key;
-        ssl_alpn               h2 http/1.1;  # required for JA4 ALPN detection
         error_log              /dev/stderr debug;
         return                 "ja3: $stream_ssl_ja3\nja4: $stream_ssl_ja4\n";
     }
