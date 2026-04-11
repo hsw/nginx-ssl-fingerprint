@@ -240,7 +240,7 @@ int ngx_ssl_ja3(ngx_connection_t *c)
     /* version */
     ptr = c->ssl->fp_ja3_str.data;
     if (data + 2 > end) {
-        return NGX_ERROR;
+        goto error;
     }
     ptr = append_uint16(ptr, *(uint16_t*)data);
     *ptr++ = ',';
@@ -248,11 +248,11 @@ int ngx_ssl_ja3(ngx_connection_t *c)
 
     /* ciphers */
     if (data + 2 > end) {
-        return NGX_ERROR;
+        goto error;
     }
     num = *(uint16_t*)data;
     if (data + 2 + num > end) {
-        return NGX_ERROR;
+        goto error;
     }
     for (i = 2; i <= num; i += 2) {
         n = ((uint16_t)data[i]) << 8 | ((uint16_t)data[i+1]);
@@ -271,11 +271,11 @@ int ngx_ssl_ja3(ngx_connection_t *c)
 
     /* extensions */
     if (data + 2 > end) {
-        return NGX_ERROR;
+        goto error;
     }
     num = *(uint16_t*)data;
     if (data + 2 + num > end) {
-        return NGX_ERROR;
+        goto error;
     }
     for (i = 2; i <= num; i += 2) {
         n = *(uint16_t*)(data+i);
@@ -294,11 +294,11 @@ int ngx_ssl_ja3(ngx_connection_t *c)
 
     /* groups */
     if (data + 2 > end) {
-        return NGX_ERROR;
+        goto error;
     }
     num = *(uint16_t*)data;
     if (data + num > end) {
-        return NGX_ERROR;
+        goto error;
     }
     for (i = 2; i + 1 < num; i += 2) {
         n = ((uint16_t)data[i]) << 8 | ((uint16_t)data[i+1]);
@@ -316,11 +316,11 @@ int ngx_ssl_ja3(ngx_connection_t *c)
 
     /* formats */
     if (data + 1 > end) {
-        return NGX_ERROR;
+        goto error;
     }
     num = *(uint8_t*)data;
     if (data + num > end) {
-        return NGX_ERROR;
+        goto error;
     }
     for (i = 1; i < num; i++) {
         ptr = append_uint16(ptr, (uint16_t)data[i]);
@@ -341,6 +341,11 @@ int ngx_ssl_ja3(ngx_connection_t *c)
     ngx_log_debug(NGX_LOG_DEBUG_EVENT, c->log, 0, "ngx_ssl_ja3: ja3 str=[%V], len=[%d]", &c->ssl->fp_ja3_str, c->ssl->fp_ja3_str.len);
 
     return NGX_OK;
+
+error:
+    c->ssl->fp_ja3_str.data = NULL;
+    c->ssl->fp_ja3_str.len = 0;
+    return NGX_ERROR;
 }
 
 /**
