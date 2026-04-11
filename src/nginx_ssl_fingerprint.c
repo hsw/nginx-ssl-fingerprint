@@ -608,10 +608,13 @@ int ngx_ssl_ja4(ngx_connection_t *c)
     if (ciphers_sz == 0) {
         ngx_memcpy(cipher_hash, "000000000000", 12);
     } else {
+        u_char  cipher_stack[512];
+
         /* each cipher is 4 hex chars, separated by commas:
          * total = ciphers_sz * 4 + (ciphers_sz - 1) */
         buf_len = ciphers_sz * 5 - 1;
-        buf = ngx_pnalloc(c->pool, buf_len);
+        buf = (buf_len <= sizeof(cipher_stack)) ? cipher_stack
+                                                : ngx_pnalloc(c->pool, buf_len);
         if (buf == NULL) {
             return NGX_ERROR;
         }
@@ -628,6 +631,8 @@ int ngx_ssl_ja4(ngx_connection_t *c)
     if (extensions_sz == 0) {
         ngx_memcpy(ext_hash, "000000000000", 12);
     } else {
+        u_char  ext_stack[512];
+
         /* extensions: extensions_sz * 5 - 1
          * if sigalgs: + 1 (underscore) + sa_sz * 5 - 1 */
         buf_len = extensions_sz * 5 - 1;
@@ -635,7 +640,8 @@ int ngx_ssl_ja4(ngx_connection_t *c)
             buf_len += 1 + sa_sz * 5 - 1;
         }
 
-        buf = ngx_pnalloc(c->pool, buf_len);
+        buf = (buf_len <= sizeof(ext_stack)) ? ext_stack
+                                             : ngx_pnalloc(c->pool, buf_len);
         if (buf == NULL) {
             return NGX_ERROR;
         }
