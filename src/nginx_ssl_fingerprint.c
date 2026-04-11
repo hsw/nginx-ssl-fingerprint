@@ -514,7 +514,9 @@ int ngx_ssl_ja4(ngx_connection_t *c)
     cc = 0;
     for (i = 0; i < c->ssl->fp_ja4_ciphers_sz; i++) {
         if (!IS_GREASE_CODE(c->ssl->fp_ja4_ciphers[i])) {
-            c->ssl->fp_ja4_ciphers[cc++] = c->ssl->fp_ja4_ciphers[i];
+            if (cc != i)
+                c->ssl->fp_ja4_ciphers[cc] = c->ssl->fp_ja4_ciphers[i];
+            cc++;
         }
     }
     c->ssl->fp_ja4_ciphers_sz = cc;
@@ -536,7 +538,9 @@ int ngx_ssl_ja4(ngx_connection_t *c)
     ec = 0;
     for (i = 0; i < c->ssl->fp_ja4_extensions_sz; i++) {
         if (!IS_GREASE_CODE(c->ssl->fp_ja4_extensions[i])) {
-            c->ssl->fp_ja4_extensions[ec++] = c->ssl->fp_ja4_extensions[i];
+            if (ec != i)
+                c->ssl->fp_ja4_extensions[ec] = c->ssl->fp_ja4_extensions[i];
+            ec++;
         }
     }
     c->ssl->fp_ja4_extensions_sz = ec;
