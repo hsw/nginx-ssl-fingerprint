@@ -11,6 +11,7 @@
 
 extern int ngx_ssl_ja3(ngx_connection_t *c);
 extern int ngx_ssl_ja3_hash(ngx_connection_t *c);
+extern int ngx_ssl_ja4_raw(ngx_connection_t *c);
 extern int ngx_ssl_ja4(ngx_connection_t *c);
 
 static ngx_int_t ngx_stream_ssl_fingerprint_preread_init(ngx_conf_t *cf);
@@ -187,7 +188,7 @@ ngx_stream_ssl_ja4_r(ngx_stream_session_t *s,
         return NGX_OK;
     }
 
-    rc = ngx_ssl_ja4(s->connection);
+    rc = ngx_ssl_ja4_raw(s->connection);
 
     /* NGX_DECLINED means QUIC or no capture data — not an error, just
      * no JA4 available.  Only log on a real NGX_ERROR. */
@@ -196,7 +197,7 @@ ngx_stream_ssl_ja4_r(ngx_stream_session_t *s,
         if (rc == NGX_ERROR)
         {
             ngx_log_debug0(NGX_LOG_DEBUG_EVENT, s->connection->log, 0,
-                           "ssl fingerprint: ja4 failed, "
+                           "ssl fingerprint: ja4_raw failed, "
                            "$stream_ssl_ja4_r not set");
         }
         return NGX_OK;
