@@ -478,51 +478,43 @@ int ngx_ssl_ja4(ngx_connection_t *c)
     }
 
     /*
-     * Step 1: Process ciphers - copy, filter GREASE, count, sort
+     * Step 1: Process ciphers - in-place GREASE filter, count, sort
      */
-    ciphers = ngx_pnalloc(c->pool,
-                           c->ssl->fp_ja4_ciphers_sz * sizeof(uint16_t));
-    if (ciphers == NULL) {
-        return NGX_ERROR;
-    }
-
     cc = 0;
     for (i = 0; i < c->ssl->fp_ja4_ciphers_sz; i++) {
         if (!IS_GREASE_CODE(c->ssl->fp_ja4_ciphers[i])) {
-            ciphers[cc++] = c->ssl->fp_ja4_ciphers[i];
+            c->ssl->fp_ja4_ciphers[cc++] = c->ssl->fp_ja4_ciphers[i];
         }
     }
+    c->ssl->fp_ja4_ciphers_sz = cc;
+
+    ciphers = c->ssl->fp_ja4_ciphers;
+    ciphers_sz = cc;
 
     /* display count capped at 99 per spec; hash uses full list */
-    cc_display = (cc > 99) ? 99 : cc;
-
-    ciphers_sz = cc;
+    cc_display = (ciphers_sz > 99) ? 99 : ciphers_sz;
 
     if (ciphers_sz > 1) {
         ngx_ssl_ja4_sort_uint16(ciphers, ciphers_sz);
     }
 
     /*
-     * Step 2: Process extensions - copy, filter GREASE, count (with SNI/ALPN),
+     * Step 2: Process extensions - in-place GREASE filter, count (with SNI/ALPN),
      *         sort, then remove SNI/ALPN for hashing
      */
-    extensions = ngx_pnalloc(c->pool,
-                              c->ssl->fp_ja4_extensions_sz * sizeof(uint16_t));
-    if (extensions == NULL) {
-        return NGX_ERROR;
-    }
-
     ec = 0;
     for (i = 0; i < c->ssl->fp_ja4_extensions_sz; i++) {
         if (!IS_GREASE_CODE(c->ssl->fp_ja4_extensions[i])) {
-            extensions[ec++] = c->ssl->fp_ja4_extensions[i];
+            c->ssl->fp_ja4_extensions[ec++] = c->ssl->fp_ja4_extensions[i];
         }
     }
+    c->ssl->fp_ja4_extensions_sz = ec;
+
+    extensions = c->ssl->fp_ja4_extensions;
+    extensions_sz = ec;
 
     /* display count capped at 99 per spec; hash uses full list */
-    ec_display = (ec > 99) ? 99 : ec;
-
-    extensions_sz = ec;
+    ec_display = (extensions_sz > 99) ? 99 : extensions_sz;
 
     if (extensions_sz > 1) {
         ngx_ssl_ja4_sort_uint16(extensions, extensions_sz);
