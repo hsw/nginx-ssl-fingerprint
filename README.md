@@ -1,10 +1,12 @@
 # nginx-ssl-fingerprint
 
-A high performance nginx module for ja3 and http2 fingerprint.
+A high performance nginx module for JA3, JA4 and HTTP/2 fingerprint.
 
 ## Patches
  - [nginx - save ja3/http2 fingerprint](patches)
  - [openssl - save clienthello data](patches)
+ - [nginx-1.29+ja4 - JA4 fingerprint support](patches/nginx-1.29+ja4.patch) (requires openssl-3.5+ja4)
+ - [openssl-3.5+ja4 - extension enumeration + JA3 data for JA4](patches/openssl.openssl-3.5+ja4.patch)
 
 ### Support Matrix
 
@@ -29,8 +31,8 @@ A high performance nginx module for ja3 and http2 fingerprint.
 | http_ssl_ja3      | NULL          | The ja3 fingerprint.     |
 | http_ssl_ja3_hash | NULL          | The ja3 fingerprint hash.|
 | http2_fingerprint | NULL          | The http2 fingerprint.   |
-| http_ssl_ja4      | NULL          | The JA4 TLS client fingerprint.|
-| http_ssl_ja4_r    | NULL          | The JA4 fingerprint raw (sorted).|
+| http_ssl_ja4      | NULL          | JA4 fingerprint (36 chars): `t13d1711h2_hash1_hash2`. |
+| http_ssl_ja4_r    | NULL          | JA4 raw fingerprint with sorted hex lists instead of hashes. |
 
 #### Example
 
@@ -53,8 +55,8 @@ http {
 | stream_ssl_greased  | 0             | TLS greased flag.        |
 | stream_ssl_ja3      | NULL          | The ja3 fingerprint.     |
 | stream_ssl_ja3_hash | NULL          | The ja3 fingerprint hash.|
-| stream_ssl_ja4      | NULL          | The JA4 TLS client fingerprint.|
-| stream_ssl_ja4_r    | NULL          | The JA4 fingerprint raw (sorted).|
+| stream_ssl_ja4      | NULL          | JA4 fingerprint (36 chars): `t13d1711h2_hash1_hash2`. |
+| stream_ssl_ja4_r    | NULL          | JA4 raw fingerprint with sorted hex lists instead of hashes. |
 
 #### Example
 

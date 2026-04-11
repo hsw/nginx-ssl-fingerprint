@@ -135,21 +135,28 @@ ngx_stream_ssl_ja4(ngx_stream_session_t *s,
 
     v->not_found = 1;
 
-    if (s->connection == NULL) {
+    if (s->connection == NULL)
+    {
         return NGX_OK;
     }
 
-    if (s->connection->ssl == NULL) {
+    if (s->connection->ssl == NULL)
+    {
         return NGX_OK;
     }
 
     rc = ngx_ssl_ja4(s->connection);
 
-    if (rc == NGX_ERROR) {
-        return NGX_ERROR;
-    }
-
-    if (rc != NGX_OK) {
+    /* NGX_DECLINED means QUIC or no capture data — not an error, just
+     * no JA4 available.  Only log on a real NGX_ERROR. */
+    if (rc != NGX_OK)
+    {
+        if (rc == NGX_ERROR)
+        {
+            ngx_log_debug0(NGX_LOG_DEBUG_EVENT, s->connection->log, 0,
+                           "ssl fingerprint: ja4 failed, "
+                           "$stream_ssl_ja4 not set");
+        }
         return NGX_OK;
     }
 
@@ -170,21 +177,28 @@ ngx_stream_ssl_ja4_r(ngx_stream_session_t *s,
 
     v->not_found = 1;
 
-    if (s->connection == NULL) {
+    if (s->connection == NULL)
+    {
         return NGX_OK;
     }
 
-    if (s->connection->ssl == NULL) {
+    if (s->connection->ssl == NULL)
+    {
         return NGX_OK;
     }
 
     rc = ngx_ssl_ja4(s->connection);
 
-    if (rc == NGX_ERROR) {
-        return NGX_ERROR;
-    }
-
-    if (rc != NGX_OK) {
+    /* NGX_DECLINED means QUIC or no capture data — not an error, just
+     * no JA4 available.  Only log on a real NGX_ERROR. */
+    if (rc != NGX_OK)
+    {
+        if (rc == NGX_ERROR)
+        {
+            ngx_log_debug0(NGX_LOG_DEBUG_EVENT, s->connection->log, 0,
+                           "ssl fingerprint: ja4 failed, "
+                           "$stream_ssl_ja4_r not set");
+        }
         return NGX_OK;
     }
 

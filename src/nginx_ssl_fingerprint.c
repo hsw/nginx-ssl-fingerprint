@@ -10,6 +10,11 @@
 
 #define IS_GREASE_CODE(code) (((code)&0x0f0f) == 0x0a0a && ((code)&0xff) == ((code)>>8))
 
+/* Stack buffer size for JA4 SHA-256 hex string computation.
+ * Must be >= max(NGX_SSL_JA4_MAX_CIPHERS, NGX_SSL_JA4_MAX_EXTENSIONS +
+ * NGX_SSL_JA4_MAX_SIGALGS) * 5.  Current worst case: 200*5-1+1+128*5-1 = 1639 */
+#define NGX_SSL_JA4_HASH_BUF_SIZE  2048
+
 static const u_char hex[] = "0123456789abcdef";
 
 static inline
@@ -435,6 +440,32 @@ ngx_ssl_ja4_hex_list(u_char *p, const uint16_t *arr, size_t count)
     return p;
 }
 
+/* Like ngx_ssl_ja4_hex_list but skips SNI (0x0000) and ALPN (0x0010) entries */
+static u_char *
+ngx_ssl_ja4_hex_list_no_sni_alpn(u_char *p, const uint16_t *arr, size_t count)
+{
+    size_t     i;
+    ngx_uint_t first;
+
+    first = 1;
+    for (i = 0; i < count; i++) {
+        if (arr[i] == 0x0000 || arr[i] == 0x0010) {
+            continue;
+        }
+        if (!first) {
+            *p++ = ',';
+        }
+        p[0] = hex[(arr[i] >> 12) & 0x0F];
+        p[1] = hex[(arr[i] >> 8) & 0x0F];
+        p[2] = hex[(arr[i] >> 4) & 0x0F];
+        p[3] = hex[arr[i] & 0x0F];
+        p += 4;
+        first = 0;
+    }
+
+    return p;
+}
+
 static inline ngx_uint_t
 ngx_ssl_ja4_is_alnum(u_char c)
 {
@@ -500,7 +531,7 @@ int ngx_ssl_ja4(ngx_connection_t *c)
 
     /*
      * Step 2: Process extensions - in-place GREASE filter, count (with SNI/ALPN),
-     *         sort, then remove SNI/ALPN for hashing
+     *         sort, then count excluding SNI/ALPN for hashing
      */
     ec = 0;
     for (i = 0; i < c->ssl->fp_ja4_extensions_sz; i++) {
@@ -520,15 +551,15 @@ int ngx_ssl_ja4(ngx_connection_t *c)
         ngx_ssl_ja4_sort_uint16(extensions, extensions_sz);
     }
 
-    /* Remove SNI (0x0000) and ALPN (0x0010) from sorted list for hashing */
+    /* Count extensions excluding SNI (0x0000) and ALPN (0x0010) for hashing.
+     * Do NOT compact in-place: the original array must survive retries
+     * after pool exhaustion so ec_display stays correct. */
     ec_for_hash = 0;
     for (i = 0; i < extensions_sz; i++) {
         if (extensions[i] != 0x0000 && extensions[i] != 0x0010) {
-            extensions[ec_for_hash++] = extensions[i];
+            ec_for_hash++;
         }
     }
-
-    extensions_sz = ec_for_hash;
 
     /*
      * Step 3: sigalgs (kept in original order)
@@ -608,10 +639,11 @@ int ngx_ssl_ja4(ngx_connection_t *c)
     if (ciphers_sz == 0) {
         ngx_memcpy(cipher_hash, "000000000000", 12);
     } else {
-        u_char  cipher_stack[512];
+        u_char  cipher_stack[NGX_SSL_JA4_HASH_BUF_SIZE];
 
         /* each cipher is 4 hex chars, separated by commas:
-         * total = ciphers_sz * 4 + (ciphers_sz - 1) */
+         * total = ciphers_sz * 4 + (ciphers_sz - 1)
+         * max with NGX_SSL_JA4_MAX_CIPHERS=200: 200*5-1 = 999 */
         buf_len = ciphers_sz * 5 - 1;
         buf = (buf_len <= sizeof(cipher_stack)) ? cipher_stack
                                                 : ngx_pnalloc(c->pool, buf_len);
@@ -626,16 +658,17 @@ int ngx_ssl_ja4(ngx_connection_t *c)
     }
 
     /*
-     * Step 6: Compute ext_hash
+     * Step 6: Compute ext_hash (uses ec_for_hash: excludes SNI/ALPN)
      */
-    if (extensions_sz == 0) {
+    if (ec_for_hash == 0) {
         ngx_memcpy(ext_hash, "000000000000", 12);
     } else {
-        u_char  ext_stack[512];
+        u_char  ext_stack[NGX_SSL_JA4_HASH_BUF_SIZE];
 
-        /* extensions: extensions_sz * 5 - 1
-         * if sigalgs: + 1 (underscore) + sa_sz * 5 - 1 */
-        buf_len = extensions_sz * 5 - 1;
+        /* extensions: ec_for_hash * 5 - 1
+         * if sigalgs: + 1 (underscore) + sa_sz * 5 - 1
+         * max: 200*5-1 + 1 + 128*5-1 = 1639 */
+        buf_len = ec_for_hash * 5 - 1;
         if (sa_sz > 0) {
             buf_len += 1 + sa_sz * 5 - 1;
         }
@@ -647,7 +680,7 @@ int ngx_ssl_ja4(ngx_connection_t *c)
         }
 
         p = buf;
-        p = ngx_ssl_ja4_hex_list(p, extensions, extensions_sz);
+        p = ngx_ssl_ja4_hex_list_no_sni_alpn(p, extensions, extensions_sz);
 
         if (sa_sz > 0) {
             *p++ = '_';
@@ -685,8 +718,8 @@ int ngx_ssl_ja4(ngx_connection_t *c)
         /* cipher list: each cipher 4 hex + comma, minus trailing comma */
         cipher_list_len = (ciphers_sz > 0) ? ciphers_sz * 5 - 1 : 0;
 
-        /* ext list: same pattern */
-        ext_list_len = (extensions_sz > 0) ? extensions_sz * 5 - 1 : 0;
+        /* ext list: excludes SNI/ALPN, same as hash */
+        ext_list_len = (ec_for_hash > 0) ? ec_for_hash * 5 - 1 : 0;
 
         /* sigalg list: same pattern */
         sigalg_list_len = (sa_sz > 0) ? sa_sz * 5 - 1 : 0;
@@ -715,7 +748,7 @@ int ngx_ssl_ja4(ngx_connection_t *c)
 
         *p++ = '_';
 
-        p = ngx_ssl_ja4_hex_list(p, extensions, extensions_sz);
+        p = ngx_ssl_ja4_hex_list_no_sni_alpn(p, extensions, extensions_sz);
 
         if (sa_sz > 0) {
             *p++ = '_';

@@ -148,10 +148,8 @@ ngx_http_ssl_ja4(ngx_http_request_t *r,
 
     rc = ngx_ssl_ja4(r->connection);
 
-    if (rc == NGX_ERROR) {
-        return NGX_ERROR;
-    }
-
+    /* NGX_DECLINED means QUIC or no capture data — not an error, just
+     * no JA4 available.  Only log on a real NGX_ERROR. */
     if (rc != NGX_OK) {
         return NGX_OK;
     }
@@ -180,10 +178,8 @@ ngx_http_ssl_ja4_r(ngx_http_request_t *r,
 
     rc = ngx_ssl_ja4(r->connection);
 
-    if (rc == NGX_ERROR) {
-        return NGX_ERROR;
-    }
-
+    /* NGX_DECLINED means QUIC or no capture data — not an error, just
+     * no JA4 available.  Only log on a real NGX_ERROR. */
     if (rc != NGX_OK) {
         return NGX_OK;
     }
