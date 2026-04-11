@@ -387,10 +387,21 @@ int ngx_ssl_ja3_hash(ngx_connection_t *c)
     return NGX_OK;
 }
 
-static int
-ngx_ssl_ja4_uint16_cmp(const void *a, const void *b)
+static void
+ngx_ssl_ja4_sort_uint16(uint16_t *arr, size_t n)
 {
-    return (int)*(const uint16_t *)a - (int)*(const uint16_t *)b;
+    size_t    i, j;
+    uint16_t  tmp;
+
+    for (i = 1; i < n; i++) {
+        tmp = arr[i];
+        j = i;
+        while (j > 0 && arr[j - 1] > tmp) {
+            arr[j] = arr[j - 1];
+            j--;
+        }
+        arr[j] = tmp;
+    }
 }
 
 static void
@@ -488,7 +499,7 @@ int ngx_ssl_ja4(ngx_connection_t *c)
     ciphers_sz = cc;
 
     if (ciphers_sz > 1) {
-        qsort(ciphers, ciphers_sz, sizeof(uint16_t), ngx_ssl_ja4_uint16_cmp);
+        ngx_ssl_ja4_sort_uint16(ciphers, ciphers_sz);
     }
 
     /*
@@ -514,8 +525,7 @@ int ngx_ssl_ja4(ngx_connection_t *c)
     extensions_sz = ec;
 
     if (extensions_sz > 1) {
-        qsort(extensions, extensions_sz, sizeof(uint16_t),
-              ngx_ssl_ja4_uint16_cmp);
+        ngx_ssl_ja4_sort_uint16(extensions, extensions_sz);
     }
 
     /* Remove SNI (0x0000) and ALPN (0x0010) from sorted list for hashing */
