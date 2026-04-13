@@ -4,7 +4,11 @@
 #include <ngx_log.h>
 #include <ngx_http_v2.h>
 #include <ngx_md5.h>
+#ifdef OPENSSL_NO_DEPRECATED_3_0
+#include <openssl/evp.h>
+#else
 #include <openssl/sha.h>
+#endif
 
 #include <nginx_ssl_fingerprint.h>
 
@@ -419,12 +423,27 @@ ngx_ssl_ja4_sort_uint16(uint16_t *arr, size_t n)
 static void
 ngx_ssl_ja4_sha256_hex12(u_char *data, size_t len, u_char *out)
 {
+#ifdef OPENSSL_NO_DEPRECATED_3_0
+    EVP_MD_CTX  *ctx;
+    u_char       hash[EVP_MAX_MD_SIZE];
+
+    ctx = EVP_MD_CTX_new();
+    if (ctx != NULL) {
+        EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
+        EVP_DigestUpdate(ctx, data, len);
+        EVP_DigestFinal_ex(ctx, hash, NULL);
+        EVP_MD_CTX_free(ctx);
+    } else {
+        ngx_memzero(hash, EVP_MAX_MD_SIZE);
+    }
+#else
     SHA256_CTX  ctx;
     u_char      hash[SHA256_DIGEST_LENGTH];
 
     SHA256_Init(&ctx);
     SHA256_Update(&ctx, data, len);
     SHA256_Final(hash, &ctx);
+#endif
 
     ngx_hex_dump(out, hash, 6);
 }
