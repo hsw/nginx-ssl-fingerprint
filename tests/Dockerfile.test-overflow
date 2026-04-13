@@ -1,0 +1,25 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    g++ \
+    libbotan-2-dev \
+    libnghttp2-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY tests/test_ja3_overflow.cpp /work/
+COPY tests/test_h2_overflow.cpp /work/
+
+RUN g++ -std=c++17 -O2 -Wall -Wextra \
+    -o /usr/local/bin/test_ja3_overflow \
+    /work/test_ja3_overflow.cpp \
+    $(pkg-config --cflags --libs botan-2)
+
+RUN g++ -std=c++17 -O2 -Wall -Wextra \
+    -o /usr/local/bin/test_h2_overflow \
+    /work/test_h2_overflow.cpp \
+    $(pkg-config --cflags --libs botan-2 libnghttp2)
+
+CMD ["sh", "-c", "test_ja3_overflow && test_h2_overflow"]

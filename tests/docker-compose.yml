@@ -1,0 +1,19 @@
+services:
+  nginx-asan:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile.asan
+    container_name: nginx-ja3-overflow
+    environment:
+      ASAN_OPTIONS: "detect_odr_violation=0:halt_on_error=0:log_path=stdout"
+
+  test-overflow:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile.test-overflow
+    container_name: test-ja3-overflow
+    depends_on:
+      - nginx-asan
+    environment:
+      NGINX_HOST: nginx-asan
+      NGINX_PORT: "8443"

@@ -1,0 +1,68 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libpcre2-dev \
+    zlib1g-dev \
+    libperl-dev \
+    perl \
+    make \
+    patch \
+    openssl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG NGINX_BRANCH=release-1.29.2
+ARG OPENSSL_BRANCH=openssl-3.4.1
+
+WORKDIR /work
+
+RUN git clone --depth=1 -b ${NGINX_BRANCH} https://github.com/nginx/nginx.git nginx
+RUN git clone --depth=1 -b ${OPENSSL_BRANCH} https://github.com/openssl/openssl.git openssl
+
+COPY src /work/module/src
+COPY config /work/module/config
+COPY patches /work/patches
+
+# Fix: JA3 buffer allocated as len*3 but format values >=100 need 4 chars each.
+# Uncomment to verify the fix eliminates the heap-buffer-overflow.
+#RUN sed -i 's/fp_ja3_data\.len \* 3/fp_ja3_data.len * 4/' /work/module/src/nginx_ssl_fingerprint.c
+
+# Fix: H2 priorities buffer allocated as len*2 but each 4-byte record can
+# expand to up to 16 chars (e.g. "255:1:255:256,").  Uncomment to verify.
+#RUN sed -i 's/fp_priorities\.len \* 2/fp_priorities.len * 4/' /work/module/src/nginx_ssl_fingerprint.c
+
+# Apply patches
+RUN cd /work/openssl && patch -p1 < /work/patches/openssl.openssl-3.4.patch
+RUN cd /work/nginx && patch -p1 < /work/patches/nginx-1.29.2.patch
+
+# Build nginx following README.md instructions with --with-openssl for static
+# linking (exports all symbols including SSL_client_hello_get_ja3_data which
+# is not in libssl.num).
+RUN cd /work/nginx && \
+    ./auto/configure \
+      --with-openssl=/work/openssl \
+      --add-module=/work/module \
+      --with-http_ssl_module \
+      --with-stream_ssl_module \
+      --with-debug \
+      --with-stream \
+      --with-http_v2_module \
+      --with-cc-opt="-fsanitize=address,undefined -fsanitize-recover=address -O -fno-omit-frame-pointer" \
+      --with-ld-opt="-fsanitize=address,undefined" \
+      --prefix=/work/nginx-asan \
+      2>&1 | tail -5 && \
+    make -j$(nproc) 2>&1 && \
+    make install 2>&1 | tail -3
+
+# Self-signed cert
+RUN openssl req -x509 -newkey rsa:2048 -keyout /work/test.key -out /work/test.crt \
+      -days 30 -nodes -subj '/CN=localhost'
+
+COPY tests/nginx-asan.conf /work/nginx-asan/conf/nginx.conf
+
+EXPOSE 8443 8444
+
+CMD ["/work/nginx-asan/sbin/nginx"]
