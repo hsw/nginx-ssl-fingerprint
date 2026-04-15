@@ -14,10 +14,12 @@ static ngx_int_t ngx_http_ssl_fingerprint_hash(ngx_http_request_t *r,
                              ngx_http_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_http_http2_fingerprint(ngx_http_request_t *r,
                             ngx_http_variable_value_t *v, uintptr_t data);
+#if (NGX_SSL_JA4)
 static ngx_int_t ngx_http_ssl_ja4(ngx_http_request_t *r,
                             ngx_http_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_http_ssl_ja4_r(ngx_http_request_t *r,
                             ngx_http_variable_value_t *v, uintptr_t data);
+#endif /* NGX_SSL_JA4 */
 
 static ngx_http_module_t ngx_http_ssl_fingerprint_module_ctx = {
     ngx_http_ssl_fingerprint_init,  /* preconfiguration */
@@ -53,10 +55,12 @@ static ngx_http_variable_t ngx_http_ssl_fingerprint_variables_list[] = {
      0, 0, 0},
     {ngx_string("http2_fingerprint"), NULL, ngx_http_http2_fingerprint,
      0, 0, 0},
+#if (NGX_SSL_JA4)
     {ngx_string("http_ssl_ja4"), NULL, ngx_http_ssl_ja4,
      0, 0, 0},
     {ngx_string("http_ssl_ja4_r"), NULL, ngx_http_ssl_ja4_r,
      0, 0, 0},
+#endif /* NGX_SSL_JA4 */
     ngx_http_null_variable
 };
 
@@ -132,6 +136,8 @@ ngx_http_ssl_fingerprint_hash(ngx_http_request_t *r,
     return NGX_OK;
 }
 
+#if (NGX_SSL_JA4)
+
 static ngx_int_t
 ngx_http_ssl_ja4(ngx_http_request_t *r,
                  ngx_http_variable_value_t *v, uintptr_t data)
@@ -201,6 +207,8 @@ ngx_http_ssl_ja4_r(ngx_http_request_t *r,
 
     return NGX_OK;
 }
+
+#endif /* NGX_SSL_JA4 */
 
 static ngx_int_t
 ngx_http_http2_fingerprint(ngx_http_request_t *r,

@@ -27,3 +27,10 @@ NGX_ADDON_SRCS="$NGX_ADDON_SRCS \
 
 have=NGX_JA3_FINGERPRING_MODULE  . auto/have
 
+# JA4 support — activated by JA4 patches via NGX_SSL_JA4=YES in auto/options
+if [ "${NGX_SSL_JA4:-}" = YES ]; then
+  echo "[+] JA4 fingerprint support enabled"
+  NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/src/nginx_ssl_ja4.c"
+  have=NGX_SSL_JA4  . auto/have
+fi
+
