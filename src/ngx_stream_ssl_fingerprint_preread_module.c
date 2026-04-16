@@ -14,6 +14,8 @@ extern int ngx_ssl_ja3_hash(ngx_connection_t *c);
 #if (NGX_SSL_JA4)
 extern int ngx_ssl_ja4_raw(ngx_connection_t *c);
 extern int ngx_ssl_ja4(ngx_connection_t *c);
+extern int ngx_ssl_ja4_raw_o(ngx_connection_t *c);
+extern int ngx_ssl_ja4_o(ngx_connection_t *c);
 #endif /* NGX_SSL_JA4 */
 
 static ngx_int_t ngx_stream_ssl_fingerprint_preread_init(ngx_conf_t *cf);
@@ -216,6 +218,88 @@ ngx_stream_ssl_ja4_r(ngx_stream_session_t *s,
     return NGX_OK;
 }
 
+static ngx_int_t
+ngx_stream_ssl_ja4_o(ngx_stream_session_t *s,
+                 ngx_stream_variable_value_t *v, uintptr_t data)
+{
+    ngx_int_t  rc;
+
+    v->not_found = 1;
+
+    if (s->connection == NULL)
+    {
+        return NGX_OK;
+    }
+
+    if (s->connection->ssl == NULL)
+    {
+        return NGX_OK;
+    }
+
+    rc = ngx_ssl_ja4_o(s->connection);
+
+    /* NGX_DECLINED means no capture data — not an error, just
+     * no JA4 available.  Only log on a real NGX_ERROR. */
+    if (rc != NGX_OK)
+    {
+        if (rc == NGX_ERROR)
+        {
+            ngx_log_debug0(NGX_LOG_DEBUG_EVENT, s->connection->log, 0,
+                           "ssl fingerprint: ja4_o failed, "
+                           "$stream_ssl_ja4_o not set");
+        }
+        return NGX_OK;
+    }
+
+    v->data = s->connection->ssl->fp_ja4_o.data;
+    v->len = s->connection->ssl->fp_ja4_o.len;
+    v->valid = 1;
+    v->not_found = 0;
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_stream_ssl_ja4_ro(ngx_stream_session_t *s,
+                 ngx_stream_variable_value_t *v, uintptr_t data)
+{
+    ngx_int_t  rc;
+
+    v->not_found = 1;
+
+    if (s->connection == NULL)
+    {
+        return NGX_OK;
+    }
+
+    if (s->connection->ssl == NULL)
+    {
+        return NGX_OK;
+    }
+
+    rc = ngx_ssl_ja4_raw_o(s->connection);
+
+    /* NGX_DECLINED means no capture data — not an error, just
+     * no JA4 available.  Only log on a real NGX_ERROR. */
+    if (rc != NGX_OK)
+    {
+        if (rc == NGX_ERROR)
+        {
+            ngx_log_debug0(NGX_LOG_DEBUG_EVENT, s->connection->log, 0,
+                           "ssl fingerprint: ja4_raw_o failed, "
+                           "$stream_ssl_ja4_ro not set");
+        }
+        return NGX_OK;
+    }
+
+    v->data = s->connection->ssl->fp_ja4_ro.data;
+    v->len = s->connection->ssl->fp_ja4_ro.len;
+    v->valid = 1;
+    v->not_found = 0;
+
+    return NGX_OK;
+}
+
 #endif /* NGX_SSL_JA4 */
 
 static ngx_stream_variable_t  ngx_stream_ssl_ja3_variables_list[] = {
@@ -248,6 +332,18 @@ static ngx_stream_variable_t  ngx_stream_ssl_ja3_variables_list[] = {
     {   ngx_string("stream_ssl_ja4_r"),
         NULL,
         ngx_stream_ssl_ja4_r,
+        0, 0, 0
+    },
+
+    {   ngx_string("stream_ssl_ja4_o"),
+        NULL,
+        ngx_stream_ssl_ja4_o,
+        0, 0, 0
+    },
+
+    {   ngx_string("stream_ssl_ja4_ro"),
+        NULL,
+        ngx_stream_ssl_ja4_ro,
         0, 0, 0
     },
 #endif /* NGX_SSL_JA4 */
