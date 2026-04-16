@@ -33,6 +33,8 @@ A high performance nginx module for JA3, JA4 and HTTP/2 fingerprint.
 | http2_fingerprint | NULL          | The http2 fingerprint.   |
 | http_ssl_ja4      | NULL          | JA4 fingerprint (36 chars): `t13d1711h2_hash1_hash2`. |
 | http_ssl_ja4_r    | NULL          | JA4 raw fingerprint with sorted hex lists instead of hashes. |
+| http_ssl_ja4_o    | NULL          | JA4 fingerprint with ciphers/extensions in original wire order (for bot detection). |
+| http_ssl_ja4_ro   | NULL          | JA4 raw fingerprint with ciphers/extensions in original wire order, keeps SNI/ALPN. |
 
 #### Example
 
@@ -57,6 +59,8 @@ http {
 | stream_ssl_ja3_hash | NULL          | The ja3 fingerprint hash.|
 | stream_ssl_ja4      | NULL          | JA4 fingerprint (36 chars): `t13d1711h2_hash1_hash2`. |
 | stream_ssl_ja4_r    | NULL          | JA4 raw fingerprint with sorted hex lists instead of hashes. |
+| stream_ssl_ja4_o    | NULL          | JA4 fingerprint with ciphers/extensions in original wire order (for bot detection). |
+| stream_ssl_ja4_ro   | NULL          | JA4 raw fingerprint with ciphers/extensions in original wire order, keeps SNI/ALPN. |
 
 #### Example
 
