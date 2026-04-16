@@ -141,7 +141,7 @@ ngx_ssl_ja4_is_alnum(u_char c)
  * Returns:
  *      NGX_OK - c->ssl->fp_ja4_r is set (raw JA4 string, no SHA-256)
  *      NGX_ERROR - something went wrong
- *      NGX_DECLINED - data unavailable (QUIC or callback didn't fire)
+ *      NGX_DECLINED - data unavailable (callback didn't fire or alloc failed)
  */
 int ngx_ssl_ja4_raw(ngx_connection_t *c)
 {
@@ -160,7 +160,7 @@ int ngx_ssl_ja4_raw(ngx_connection_t *c)
         return NGX_OK;
     }
 
-    /* QUIC guard: callback didn't fire */
+    /* no capture data: callback didn't fire or allocation failed */
     if (c->ssl->fp_ja4_ciphers == NULL) {
         return NGX_DECLINED;
     }
@@ -256,7 +256,11 @@ int ngx_ssl_ja4_raw(ngx_connection_t *c)
     /* _a section: t + ver(2) + sni(1) + cc(2) + ec(2) + alpn(2) */
     p = a_buf;
 
-    *p++ = 't';                                    /* transport */
+#if (NGX_QUIC || NGX_COMPAT)
+    *p++ = c->quic ? 'q' : 't';                    /* transport */
+#else
+    *p++ = 't';                                     /* transport */
+#endif
     *p++ = ver[0];                                 /* version char 1 */
     *p++ = ver[1];                                 /* version char 2 */
     *p++ = c->ssl->fp_ja4_has_sni ? 'd' : 'i';    /* SNI */
@@ -354,7 +358,7 @@ int ngx_ssl_ja4_raw(ngx_connection_t *c)
  * Returns:
  *      NGX_OK - c->ssl->fp_ja4 and c->ssl->fp_ja4_r are set
  *      NGX_ERROR - something went wrong
- *      NGX_DECLINED - data unavailable (QUIC or callback didn't fire)
+ *      NGX_DECLINED - data unavailable (callback didn't fire or alloc failed)
  */
 int ngx_ssl_ja4(ngx_connection_t *c)
 {
