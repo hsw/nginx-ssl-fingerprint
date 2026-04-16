@@ -86,14 +86,18 @@ ngx_ssl_ja4_sha256_hex12(u_char *data, size_t len, u_char *out)
     EVP_MD_CTX  *ctx;
     u_char       hash[EVP_MAX_MD_SIZE];
 
+    /* Zero hash buffer up front: if EVP_MD_CTX_new() succeeds but any of the
+     * EVP_Digest* calls below fail, hash would otherwise be uninitialized
+     * stack memory and ngx_hex_dump() would leak 6 bytes into the JA4 output.
+     */
+    ngx_memzero(hash, EVP_MAX_MD_SIZE);
+
     ctx = EVP_MD_CTX_new();
     if (ctx != NULL) {
         EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
         EVP_DigestUpdate(ctx, data, len);
         EVP_DigestFinal_ex(ctx, hash, NULL);
         EVP_MD_CTX_free(ctx);
-    } else {
-        ngx_memzero(hash, EVP_MAX_MD_SIZE);
     }
 #else
     SHA256_CTX  ctx;
