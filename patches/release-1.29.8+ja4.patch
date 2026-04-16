@@ -262,7 +262,7 @@ diff --git a/src/event/ngx_event_openssl.h b/src/event/ngx_event_openssl.h
 index 79ae39503..832ef2add 100644
 --- a/src/event/ngx_event_openssl.h
 +++ b/src/event/ngx_event_openssl.h
-@@ -149,6 +149,24 @@ struct ngx_ssl_connection_s {
+@@ -149,6 +149,28 @@ struct ngx_ssl_connection_s {
      unsigned                    early_preread:1;
      unsigned                    write_blocked:1;
      unsigned                    sni_accepted:1;
@@ -274,8 +274,10 @@ index 79ae39503..832ef2add 100644
 +
 +    uint16_t                   *fp_ja4_ciphers;
 +    size_t                      fp_ja4_ciphers_sz;
++    uint16_t                   *fp_ja4_ciphers_sorted;
 +    uint16_t                   *fp_ja4_extensions;
 +    size_t                      fp_ja4_extensions_sz;
++    uint16_t                   *fp_ja4_extensions_sorted;
 +    uint16_t                   *fp_ja4_sigalgs;
 +    size_t                      fp_ja4_sigalgs_sz;
 +    uint16_t                    fp_ja4_version;
@@ -284,6 +286,8 @@ index 79ae39503..832ef2add 100644
 +
 +    ngx_str_t                   fp_ja4;
 +    ngx_str_t                   fp_ja4_r;
++    ngx_str_t                   fp_ja4_o;
++    ngx_str_t                   fp_ja4_ro;
  };
  
  
