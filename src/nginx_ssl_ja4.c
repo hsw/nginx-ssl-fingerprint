@@ -47,6 +47,11 @@
 static const u_char hex[] = "0123456789abcdef";
 
 
+/*
+ * Insertion sort: typical n <= ~50 (cipher / extension count after GREASE).
+ * Beats qsort for these sizes — see tmp/bench_sort.c — and avoids the
+ * libc call + comparator indirection in the hot path.
+ */
 static void
 ngx_ssl_ja4_sort_uint16(uint16_t *arr, size_t n)
 {
@@ -187,8 +192,10 @@ ngx_ssl_ja4_grease_filter(ngx_connection_t *c)
  * fp_ja4_ciphers_sorted / fp_ja4_extensions_sorted. Only called on the
  * sorted-variant code path (original == 0).
  *
- * Returns NGX_OK on success; NGX_ERROR on pool exhaustion (sorted pointers
- * cleared so the next call may retry).
+ * Returns NGX_OK on success; NGX_ERROR on pool exhaustion. On partial
+ * failure (ciphers_sorted populated, extensions_sorted alloc fails) the
+ * already-populated pointer is kept so a subsequent retry skips the
+ * succeeded allocation.
  */
 static int
 ngx_ssl_ja4_build_sorted(ngx_connection_t *c)
@@ -447,8 +454,7 @@ ngx_ssl_ja4_impl(ngx_connection_t *c, ngx_str_t *raw, ngx_str_t *dst,
     size_t       sa_sz;
     uint16_t    *ciphers, *extensions;
     size_t       ciphers_sz, extensions_sz;
-    u_char      *p, *buf;
-    size_t       buf_len;
+    u_char      *p;
     u_char       a_buf[NGX_SSL_JA4_A_LEN];
     u_char       cipher_hash[12];
     u_char       ext_hash[12];
@@ -496,6 +502,8 @@ ngx_ssl_ja4_impl(ngx_connection_t *c, ngx_str_t *raw, ngx_str_t *dst,
         ngx_memcpy(cipher_hash, "000000000000", 12);
     } else {
         u_char  cipher_stack[NGX_SSL_JA4_HASH_BUF_SIZE];
+        u_char *buf;
+        size_t  buf_len;
 
         buf_len = ciphers_sz * 5 - 1;
         buf = (buf_len <= sizeof(cipher_stack)) ? cipher_stack
@@ -522,6 +530,8 @@ ngx_ssl_ja4_impl(ngx_connection_t *c, ngx_str_t *raw, ngx_str_t *dst,
             ngx_memcpy(ext_hash, "000000000000", 12);
         } else {
             u_char  ext_stack[NGX_SSL_JA4_HASH_BUF_SIZE];
+            u_char *buf;
+            size_t  buf_len;
 
             buf_len = ext_entries * 5 - 1;
             if (sa_sz > 0) {
