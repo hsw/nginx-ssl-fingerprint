@@ -5,6 +5,19 @@
  * Reads pre-captured cipher/extension/sigalg arrays from c->ssl->fp_ja4_*
  * fields (populated by the nginx JA4 patch callback) and builds the JA4
  * fingerprint string per the FoxIO JA4 specification.
+ *
+ * Four variants are exposed, all sharing the same _a section
+ * (transport/version/sni/cc/ec/alpn) but differing in the cipher/extension
+ * list content used for the hash / raw output:
+ *
+ *   ja4     - sorted ciphers, sorted extensions (minus SNI/ALPN), hashed
+ *   ja4_r   - sorted ciphers, sorted extensions (minus SNI/ALPN), raw
+ *   ja4_o   - original-order ciphers and extensions (keeps SNI/ALPN), hashed
+ *   ja4_ro  - original-order ciphers and extensions (keeps SNI/ALPN), raw
+ *
+ * The GREASE filter is applied in-place on the shared arrays (idempotent
+ * after first pass). Sorted copies live in fp_ja4_ciphers_sorted /
+ * fp_ja4_extensions_sorted, allocated lazily on first sorted-variant call.
  */
 
 #include <ngx_config.h>
@@ -20,7 +33,8 @@
 
 /* Stack buffer size for JA4 SHA-256 hex string computation.
  * Must be >= max(NGX_SSL_JA4_MAX_CIPHERS, NGX_SSL_JA4_MAX_EXTENSIONS +
- * NGX_SSL_JA4_MAX_SIGALGS) * 5.  Current worst case: 200*5-1+1+128*5-1 = 1639 */
+ * NGX_SSL_JA4_MAX_SIGALGS) * 5.  Current worst case (original-order path,
+ * includes SNI+ALPN): 200*5 + 1 + 128*5-1 = 1640 */
 #define NGX_SSL_JA4_HASH_BUF_SIZE  2048
 
 /* JA4 _a section: t(1) + ver(2) + sni(1) + cc(2) + ec(2) + alpn(2) = 10 chars */
@@ -134,20 +148,104 @@ ngx_ssl_ja4_is_alnum(u_char c)
 }
 
 
-/**
- * Params:
- *      c and c->ssl should be valid pointers
+/*
+ * GREASE-filter fp_ja4_ciphers / fp_ja4_extensions in place.
+ * Idempotent: after the first pass IS_GREASE_CODE returns false for every
+ * surviving element. Safe to call from any of the 4 entry points.
+ */
+static void
+ngx_ssl_ja4_grease_filter(ngx_connection_t *c)
+{
+    size_t  i, n;
+
+    n = 0;
+    for (i = 0; i < c->ssl->fp_ja4_ciphers_sz; i++) {
+        if (!IS_GREASE_CODE(c->ssl->fp_ja4_ciphers[i])) {
+            if (n != i) {
+                c->ssl->fp_ja4_ciphers[n] = c->ssl->fp_ja4_ciphers[i];
+            }
+            n++;
+        }
+    }
+    c->ssl->fp_ja4_ciphers_sz = n;
+
+    n = 0;
+    for (i = 0; i < c->ssl->fp_ja4_extensions_sz; i++) {
+        if (!IS_GREASE_CODE(c->ssl->fp_ja4_extensions[i])) {
+            if (n != i) {
+                c->ssl->fp_ja4_extensions[n] = c->ssl->fp_ja4_extensions[i];
+            }
+            n++;
+        }
+    }
+    c->ssl->fp_ja4_extensions_sz = n;
+}
+
+
+/*
+ * Lazy-alloc sorted copies of fp_ja4_ciphers / fp_ja4_extensions into
+ * fp_ja4_ciphers_sorted / fp_ja4_extensions_sorted. Only called on the
+ * sorted-variant code path (original == 0).
+ *
+ * Returns NGX_OK on success; NGX_ERROR on pool exhaustion (sorted pointers
+ * cleared so the next call may retry).
+ */
+static int
+ngx_ssl_ja4_build_sorted(ngx_connection_t *c)
+{
+    size_t  n_c, n_e;
+
+    n_c = c->ssl->fp_ja4_ciphers_sz;
+    n_e = c->ssl->fp_ja4_extensions_sz;
+
+    if (c->ssl->fp_ja4_ciphers_sorted == NULL && n_c > 0) {
+        c->ssl->fp_ja4_ciphers_sorted = ngx_pnalloc(c->pool,
+                                                    n_c * sizeof(uint16_t));
+        if (c->ssl->fp_ja4_ciphers_sorted == NULL) {
+            return NGX_ERROR;
+        }
+        ngx_memcpy(c->ssl->fp_ja4_ciphers_sorted, c->ssl->fp_ja4_ciphers,
+                   n_c * sizeof(uint16_t));
+        if (n_c > 1) {
+            ngx_ssl_ja4_sort_uint16(c->ssl->fp_ja4_ciphers_sorted, n_c);
+        }
+    }
+
+    if (c->ssl->fp_ja4_extensions_sorted == NULL && n_e > 0) {
+        c->ssl->fp_ja4_extensions_sorted = ngx_pnalloc(c->pool,
+                                                       n_e * sizeof(uint16_t));
+        if (c->ssl->fp_ja4_extensions_sorted == NULL) {
+            return NGX_ERROR;
+        }
+        ngx_memcpy(c->ssl->fp_ja4_extensions_sorted, c->ssl->fp_ja4_extensions,
+                   n_e * sizeof(uint16_t));
+        if (n_e > 1) {
+            ngx_ssl_ja4_sort_uint16(c->ssl->fp_ja4_extensions_sorted, n_e);
+        }
+    }
+
+    return NGX_OK;
+}
+
+
+/*
+ * Core raw-JA4 builder.
+ *
+ * Parameters:
+ *   c        - connection (c, c->ssl, c->pool all valid)
+ *   dst      - output ngx_str_t (fp_ja4_r for sorted, fp_ja4_ro for original)
+ *   original - 0 = sorted path (ja4/ja4_r), 1 = original-order path (ja4_o/ja4_ro)
  *
  * Returns:
- *      NGX_OK - c->ssl->fp_ja4_r is set (raw JA4 string, no SHA-256)
- *      NGX_ERROR - something went wrong
- *      NGX_DECLINED - data unavailable (callback didn't fire or alloc failed)
+ *   NGX_OK       - *dst populated
+ *   NGX_ERROR    - pool allocation failed
+ *   NGX_DECLINED - capture data unavailable (callback didn't fire)
  */
-int ngx_ssl_ja4_raw(ngx_connection_t *c)
+static int
+ngx_ssl_ja4_raw_impl(ngx_connection_t *c, ngx_str_t *dst, ngx_uint_t original)
 {
     size_t       i;
-    size_t       cc, ec, ec_for_hash;
-    size_t       cc_display, ec_display;
+    size_t       cc_display, ec_display, ec_for_hash;
     size_t       sa_sz;
     uint16_t    *ciphers, *extensions;
     size_t       ciphers_sz, extensions_sz;
@@ -155,8 +253,8 @@ int ngx_ssl_ja4_raw(ngx_connection_t *c)
     const char  *ver;
     u_char       a_buf[NGX_SSL_JA4_A_LEN];
 
-    /* cache check */
-    if (c->ssl->fp_ja4_r.data != NULL) {
+    /* per-variant cache check */
+    if (dst->data != NULL) {
         return NGX_OK;
     }
 
@@ -165,71 +263,43 @@ int ngx_ssl_ja4_raw(ngx_connection_t *c)
         return NGX_DECLINED;
     }
 
-    /*
-     * Step 1: Process ciphers - in-place GREASE filter, count, sort
-     */
-    cc = 0;
-    for (i = 0; i < c->ssl->fp_ja4_ciphers_sz; i++) {
-        if (!IS_GREASE_CODE(c->ssl->fp_ja4_ciphers[i])) {
-            if (cc != i)
-                c->ssl->fp_ja4_ciphers[cc] = c->ssl->fp_ja4_ciphers[i];
-            cc++;
+    /* Step 1: GREASE-filter shared arrays (idempotent) */
+    ngx_ssl_ja4_grease_filter(c);
+
+    /* Step 2: select cipher / extension source by flag */
+    if (original) {
+        ciphers       = c->ssl->fp_ja4_ciphers;
+        extensions    = c->ssl->fp_ja4_extensions;
+    } else {
+        if (ngx_ssl_ja4_build_sorted(c) != NGX_OK) {
+            return NGX_ERROR;
         }
+        ciphers       = c->ssl->fp_ja4_ciphers_sorted;
+        extensions    = c->ssl->fp_ja4_extensions_sorted;
     }
-    c->ssl->fp_ja4_ciphers_sz = cc;
+    ciphers_sz    = c->ssl->fp_ja4_ciphers_sz;
+    extensions_sz = c->ssl->fp_ja4_extensions_sz;
 
-    ciphers = c->ssl->fp_ja4_ciphers;
-    ciphers_sz = cc;
-
-    /* display count capped at 99 per spec; hash uses full list */
+    /* display counts capped at 99 per spec; same for all 4 variants */
     cc_display = (ciphers_sz > 99) ? 99 : ciphers_sz;
-
-    if (ciphers_sz > 1) {
-        ngx_ssl_ja4_sort_uint16(ciphers, ciphers_sz);
-    }
-
-    /*
-     * Step 2: Process extensions - in-place GREASE filter, count (with SNI/ALPN),
-     *         sort, then count excluding SNI/ALPN for hashing
-     */
-    ec = 0;
-    for (i = 0; i < c->ssl->fp_ja4_extensions_sz; i++) {
-        if (!IS_GREASE_CODE(c->ssl->fp_ja4_extensions[i])) {
-            if (ec != i)
-                c->ssl->fp_ja4_extensions[ec] = c->ssl->fp_ja4_extensions[i];
-            ec++;
-        }
-    }
-    c->ssl->fp_ja4_extensions_sz = ec;
-
-    extensions = c->ssl->fp_ja4_extensions;
-    extensions_sz = ec;
-
-    /* display count capped at 99 per spec; hash uses full list */
     ec_display = (extensions_sz > 99) ? 99 : extensions_sz;
 
-    if (extensions_sz > 1) {
-        ngx_ssl_ja4_sort_uint16(extensions, extensions_sz);
-    }
-
-    /* Count extensions excluding SNI and ALPN for hashing.
-     * Do NOT compact in-place: the original array must survive retries
-     * after pool exhaustion so ec_display stays correct. */
+    /* Count extensions excluding SNI and ALPN for sorted-variant hash. */
     ec_for_hash = 0;
-    for (i = 0; i < extensions_sz; i++) {
-        if (extensions[i] != NGX_SSL_EXT_SNI && extensions[i] != NGX_SSL_EXT_ALPN) {
-            ec_for_hash++;
+    if (!original) {
+        for (i = 0; i < extensions_sz; i++) {
+            if (extensions[i] != NGX_SSL_EXT_SNI
+                && extensions[i] != NGX_SSL_EXT_ALPN)
+            {
+                ec_for_hash++;
+            }
         }
     }
 
-    /*
-     * Step 3: sigalgs (kept in original order)
-     */
+    /* Step 3: sigalgs (always original order, shared across variants) */
     sa_sz = c->ssl->fp_ja4_sigalgs_sz;
 
-    /*
-     * Step 4: Build _a section: t{ver}{sni}{cc}{ec}{alpn}
-     */
+    /* Step 4: Build _a section: t{ver}{sni}{cc}{ec}{alpn} */
 
     /* version mapping */
     switch (c->ssl->fp_ja4_version) {
@@ -253,7 +323,6 @@ int ngx_ssl_ja4_raw(ngx_connection_t *c)
         break;
     }
 
-    /* _a section: t + ver(2) + sni(1) + cc(2) + ec(2) + alpn(2) */
     p = a_buf;
 
 #if (NGX_QUIC || NGX_COMPAT)
@@ -298,18 +367,20 @@ int ngx_ssl_ja4_raw(ngx_connection_t *c)
         }
     }
 
-    /*
-     * Step 8: Build fp_ja4_r: "{_a}_{cipher_list}_{ext_list}[_{sigalg_list}]"
-     */
+    /* Step 5: Build *dst: "{_a}_{cipher_list}_{ext_list}[_{sigalg_list}]" */
     {
         size_t  raw_len;
         size_t  cipher_list_len, ext_list_len, sigalg_list_len;
+        size_t  ext_entries;
 
         /* cipher list: each cipher 4 hex + comma, minus trailing comma */
         cipher_list_len = (ciphers_sz > 0) ? ciphers_sz * 5 - 1 : 0;
 
-        /* ext list: excludes SNI/ALPN, same as hash */
-        ext_list_len = (ec_for_hash > 0) ? ec_for_hash * 5 - 1 : 0;
+        /* ext list size depends on variant:
+         *   sorted  -> excludes SNI/ALPN, uses ec_for_hash
+         *   original -> keeps everything, uses extensions_sz */
+        ext_entries = original ? extensions_sz : ec_for_hash;
+        ext_list_len = (ext_entries > 0) ? ext_entries * 5 - 1 : 0;
 
         /* sigalg list: same pattern */
         sigalg_list_len = (sa_sz > 0) ? sa_sz * 5 - 1 : 0;
@@ -320,14 +391,14 @@ int ngx_ssl_ja4_raw(ngx_connection_t *c)
             raw_len += 1 + sigalg_list_len;
         }
 
-        c->ssl->fp_ja4_r.len = raw_len;
-        c->ssl->fp_ja4_r.data = ngx_pnalloc(c->pool, raw_len);
-        if (c->ssl->fp_ja4_r.data == NULL) {
-            c->ssl->fp_ja4_r.len = 0;
+        dst->len = raw_len;
+        dst->data = ngx_pnalloc(c->pool, raw_len);
+        if (dst->data == NULL) {
+            dst->len = 0;
             return NGX_ERROR;
         }
 
-        p = c->ssl->fp_ja4_r.data;
+        p = dst->data;
         ngx_memcpy(p, a_buf, NGX_SSL_JA4_A_LEN);  p += NGX_SSL_JA4_A_LEN;
         *p++ = '_';
 
@@ -335,7 +406,11 @@ int ngx_ssl_ja4_raw(ngx_connection_t *c)
 
         *p++ = '_';
 
-        p = ngx_ssl_ja4_hex_list_no_sni_alpn(p, extensions, extensions_sz);
+        if (original) {
+            p = ngx_ssl_ja4_hex_list(p, extensions, extensions_sz);
+        } else {
+            p = ngx_ssl_ja4_hex_list_no_sni_alpn(p, extensions, extensions_sz);
+        }
 
         if (sa_sz > 0) {
             *p++ = '_';
@@ -344,23 +419,27 @@ int ngx_ssl_ja4_raw(ngx_connection_t *c)
     }
 
     ngx_log_debug(NGX_LOG_DEBUG_EVENT, c->log, 0,
-                  "ngx_ssl_ja4_raw: ja4_r=[%V]",
-                  &c->ssl->fp_ja4_r);
+                  "ngx_ssl_ja4_raw_impl(original=%ui): [%V]",
+                  original, dst);
 
     return NGX_OK;
 }
 
 
-/**
- * Params:
- *      c and c->ssl should be valid pointers
+/*
+ * Core hashed-JA4 builder.
  *
- * Returns:
- *      NGX_OK - c->ssl->fp_ja4 and c->ssl->fp_ja4_r are set
- *      NGX_ERROR - something went wrong
- *      NGX_DECLINED - data unavailable (callback didn't fire or alloc failed)
+ * Parameters:
+ *   c        - connection
+ *   raw      - raw-variant dst to delegate to (fp_ja4_r or fp_ja4_ro)
+ *   dst      - hashed output (fp_ja4 or fp_ja4_o)
+ *   original - 0 = sorted path, 1 = original-order path
+ *
+ * Returns NGX_OK / NGX_ERROR / NGX_DECLINED (see *_raw_impl).
  */
-int ngx_ssl_ja4(ngx_connection_t *c)
+static int
+ngx_ssl_ja4_impl(ngx_connection_t *c, ngx_str_t *raw, ngx_str_t *dst,
+    ngx_uint_t original)
 {
     int          rc;
     size_t       i;
@@ -374,48 +453,50 @@ int ngx_ssl_ja4(ngx_connection_t *c)
     u_char       cipher_hash[12];
     u_char       ext_hash[12];
 
-    /* cache check */
-    if (c->ssl->fp_ja4.data != NULL) {
+    /* per-variant cache check */
+    if (dst->data != NULL) {
         return NGX_OK;
     }
 
-    /* delegate common work (GREASE filter, sort, build fp_ja4_r) to _raw */
-    rc = ngx_ssl_ja4_raw(c);
+    /* delegate common work (GREASE filter, sort, build raw string) */
+    rc = ngx_ssl_ja4_raw_impl(c, raw, original);
     if (rc != NGX_OK) {
-        return rc;  /* handles NGX_DECLINED and NGX_ERROR */
+        return rc;
     }
 
-    /* copy _a section from fp_ja4_r (built by _raw) */
-    ngx_memcpy(a_buf, c->ssl->fp_ja4_r.data, NGX_SSL_JA4_A_LEN);
+    /* copy _a section from raw (they share the same _a section) */
+    ngx_memcpy(a_buf, raw->data, NGX_SSL_JA4_A_LEN);
 
-    /* Recompute ec_for_hash: extensions already GREASE-filtered and sorted
-     * by _raw, only need to exclude SNI and ALPN */
-    extensions = c->ssl->fp_ja4_extensions;
+    /* select cipher / extension source matching the raw path */
+    if (original) {
+        ciphers    = c->ssl->fp_ja4_ciphers;
+        extensions = c->ssl->fp_ja4_extensions;
+    } else {
+        ciphers    = c->ssl->fp_ja4_ciphers_sorted;
+        extensions = c->ssl->fp_ja4_extensions_sorted;
+    }
+    ciphers_sz    = c->ssl->fp_ja4_ciphers_sz;
     extensions_sz = c->ssl->fp_ja4_extensions_sz;
+    sa_sz = c->ssl->fp_ja4_sigalgs_sz;
 
+    /* sorted-variant extension hash list excludes SNI/ALPN */
     ec_for_hash = 0;
-    for (i = 0; i < extensions_sz; i++) {
-        if (extensions[i] != NGX_SSL_EXT_SNI && extensions[i] != NGX_SSL_EXT_ALPN) {
-            ec_for_hash++;
+    if (!original) {
+        for (i = 0; i < extensions_sz; i++) {
+            if (extensions[i] != NGX_SSL_EXT_SNI
+                && extensions[i] != NGX_SSL_EXT_ALPN)
+            {
+                ec_for_hash++;
+            }
         }
     }
 
-    /* get ciphers and sigalgs info for hash computation */
-    ciphers = c->ssl->fp_ja4_ciphers;
-    ciphers_sz = c->ssl->fp_ja4_ciphers_sz;
-    sa_sz = c->ssl->fp_ja4_sigalgs_sz;
-
-    /*
-     * Step 5: Compute cipher_hash
-     */
+    /* Step 6: Compute cipher_hash */
     if (ciphers_sz == 0) {
         ngx_memcpy(cipher_hash, "000000000000", 12);
     } else {
         u_char  cipher_stack[NGX_SSL_JA4_HASH_BUF_SIZE];
 
-        /* each cipher is 4 hex chars, separated by commas:
-         * total = ciphers_sz * 4 + (ciphers_sz - 1)
-         * max with NGX_SSL_JA4_MAX_CIPHERS=200: 200*5-1 = 999 */
         buf_len = ciphers_sz * 5 - 1;
         buf = (buf_len <= sizeof(cipher_stack)) ? cipher_stack
                                                 : ngx_pnalloc(c->pool, buf_len);
@@ -429,51 +510,56 @@ int ngx_ssl_ja4(ngx_connection_t *c)
         ngx_ssl_ja4_sha256_hex12(buf, buf_len, cipher_hash);
     }
 
-    /*
-     * Step 6: Compute ext_hash (uses ec_for_hash: excludes SNI/ALPN)
-     */
-    if (ec_for_hash == 0) {
-        ngx_memcpy(ext_hash, "000000000000", 12);
-    } else {
-        u_char  ext_stack[NGX_SSL_JA4_HASH_BUF_SIZE];
+    /* Step 7: Compute ext_hash
+     *   sorted  -> list excludes SNI/ALPN (ec_for_hash entries)
+     *   original -> list includes everything (extensions_sz entries) */
+    {
+        size_t  ext_entries;
 
-        /* extensions: ec_for_hash * 5 - 1
-         * if sigalgs: + 1 (underscore) + sa_sz * 5 - 1
-         * max: 200*5-1 + 1 + 128*5-1 = 1639 */
-        buf_len = ec_for_hash * 5 - 1;
-        if (sa_sz > 0) {
-            buf_len += 1 + sa_sz * 5 - 1;
+        ext_entries = original ? extensions_sz : ec_for_hash;
+
+        if (ext_entries == 0) {
+            ngx_memcpy(ext_hash, "000000000000", 12);
+        } else {
+            u_char  ext_stack[NGX_SSL_JA4_HASH_BUF_SIZE];
+
+            buf_len = ext_entries * 5 - 1;
+            if (sa_sz > 0) {
+                buf_len += 1 + sa_sz * 5 - 1;
+            }
+
+            buf = (buf_len <= sizeof(ext_stack)) ? ext_stack
+                                                 : ngx_pnalloc(c->pool, buf_len);
+            if (buf == NULL) {
+                return NGX_ERROR;
+            }
+
+            p = buf;
+            if (original) {
+                p = ngx_ssl_ja4_hex_list(p, extensions, extensions_sz);
+            } else {
+                p = ngx_ssl_ja4_hex_list_no_sni_alpn(p, extensions,
+                                                     extensions_sz);
+            }
+
+            if (sa_sz > 0) {
+                *p++ = '_';
+                p = ngx_ssl_ja4_hex_list(p, c->ssl->fp_ja4_sigalgs, sa_sz);
+            }
+
+            ngx_ssl_ja4_sha256_hex12(buf, buf_len, ext_hash);
         }
-
-        buf = (buf_len <= sizeof(ext_stack)) ? ext_stack
-                                             : ngx_pnalloc(c->pool, buf_len);
-        if (buf == NULL) {
-            return NGX_ERROR;
-        }
-
-        p = buf;
-        p = ngx_ssl_ja4_hex_list_no_sni_alpn(p, extensions, extensions_sz);
-
-        if (sa_sz > 0) {
-            *p++ = '_';
-            p = ngx_ssl_ja4_hex_list(p, c->ssl->fp_ja4_sigalgs, sa_sz);
-        }
-
-        ngx_ssl_ja4_sha256_hex12(buf, buf_len, ext_hash);
     }
 
-    /*
-     * Step 7: Build fp_ja4: "{_a}_{cipher_hash}_{ext_hash}"
-     * Length: NGX_SSL_JA4_A_LEN + 1 + 12 + 1 + 12 = 36
-     */
-    c->ssl->fp_ja4.len = NGX_SSL_JA4_A_LEN + 1 + 12 + 1 + 12;
-    c->ssl->fp_ja4.data = ngx_pnalloc(c->pool, c->ssl->fp_ja4.len);
-    if (c->ssl->fp_ja4.data == NULL) {
-        c->ssl->fp_ja4.len = 0;
+    /* Step 8: Build dst: "{_a}_{cipher_hash}_{ext_hash}" (36 bytes) */
+    dst->len = NGX_SSL_JA4_A_LEN + 1 + 12 + 1 + 12;
+    dst->data = ngx_pnalloc(c->pool, dst->len);
+    if (dst->data == NULL) {
+        dst->len = 0;
         return NGX_ERROR;
     }
 
-    p = c->ssl->fp_ja4.data;
+    p = dst->data;
     ngx_memcpy(p, a_buf, NGX_SSL_JA4_A_LEN);  p += NGX_SSL_JA4_A_LEN;
     *p++ = '_';
     ngx_memcpy(p, cipher_hash, 12);  p += 12;
@@ -481,8 +567,41 @@ int ngx_ssl_ja4(ngx_connection_t *c)
     ngx_memcpy(p, ext_hash, 12);
 
     ngx_log_debug(NGX_LOG_DEBUG_EVENT, c->log, 0,
-                  "ngx_ssl_ja4: ja4=[%V], ja4_r=[%V]",
-                  &c->ssl->fp_ja4, &c->ssl->fp_ja4_r);
+                  "ngx_ssl_ja4_impl(original=%ui): [%V], raw=[%V]",
+                  original, dst, raw);
 
     return NGX_OK;
+}
+
+
+/*
+ * Public wrappers. Each entry point may be called first; cache lives in
+ * its own dst->data field, so lazy-init is independent across variants.
+ */
+
+int
+ngx_ssl_ja4_raw(ngx_connection_t *c)
+{
+    return ngx_ssl_ja4_raw_impl(c, &c->ssl->fp_ja4_r, 0);
+}
+
+
+int
+ngx_ssl_ja4(ngx_connection_t *c)
+{
+    return ngx_ssl_ja4_impl(c, &c->ssl->fp_ja4_r, &c->ssl->fp_ja4, 0);
+}
+
+
+int
+ngx_ssl_ja4_raw_o(ngx_connection_t *c)
+{
+    return ngx_ssl_ja4_raw_impl(c, &c->ssl->fp_ja4_ro, 1);
+}
+
+
+int
+ngx_ssl_ja4_o(ngx_connection_t *c)
+{
+    return ngx_ssl_ja4_impl(c, &c->ssl->fp_ja4_ro, &c->ssl->fp_ja4_o, 1);
 }
