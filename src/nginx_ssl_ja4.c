@@ -32,13 +32,22 @@
 
 
 /* Stack buffer size for JA4 SHA-256 hex string computation.
- * Must be >= max(NGX_SSL_JA4_MAX_CIPHERS, NGX_SSL_JA4_MAX_EXTENSIONS +
- * NGX_SSL_JA4_MAX_SIGALGS) * 5.  Current worst case (original-order path,
- * includes SNI+ALPN): 200*5 + 1 + 128*5-1 = 1640 */
+ * Must be >= max( NGX_SSL_JA4_MAX_CIPHERS * 5,
+ *                 NGX_SSL_JA4_MAX_EXTENSIONS * 5 + 1 + NGX_SSL_JA4_MAX_SIGALGS * 5 ).
+ * Current worst case (original-order ext path, includes SNI+ALPN):
+ *   200*5 - 1 + 1 + 128*5 - 1 = 1639 bytes. */
 #define NGX_SSL_JA4_HASH_BUF_SIZE  2048
 
 /* JA4 _a section: t(1) + ver(2) + sni(1) + cc(2) + ec(2) + alpn(2) = 10 chars */
 #define NGX_SSL_JA4_A_LEN          10
+
+/* SHA-256 truncated hex length (first 12 hex chars = first 6 bytes of digest)
+ * used for cipher_hash and ext_hash in the hashed JA4 output. */
+#define NGX_SSL_JA4_HASH_HEX_LEN   12
+
+/* "000000000000" placeholder hash (12 chars) emitted when cipher or extension
+ * list is empty. Length must equal NGX_SSL_JA4_HASH_HEX_LEN. */
+#define NGX_SSL_JA4_EMPTY_HASH     "000000000000"
 
 /* TLS extension type codes used in JA4 hash exclusion */
 #define NGX_SSL_EXT_SNI            0x0000
@@ -194,8 +203,9 @@ ngx_ssl_ja4_grease_filter(ngx_connection_t *c)
  *
  * Returns NGX_OK on success; NGX_ERROR on pool exhaustion. On partial
  * failure (ciphers_sorted populated, extensions_sorted alloc fails) the
- * already-populated pointer is kept so a subsequent retry skips the
- * succeeded allocation.
+ * already-populated pointer is preserved, so the next call into this
+ * function skips the already-succeeded allocation (the per-pointer
+ * NULL check at the top of each block re-enters only the failed step).
  */
 static int
 ngx_ssl_ja4_build_sorted(ngx_connection_t *c)
@@ -236,6 +246,93 @@ ngx_ssl_ja4_build_sorted(ngx_connection_t *c)
 
 
 /*
+ * Build the JA4 _a section (transport + version + SNI flag + cc + ec + ALPN
+ * pair) into a 10-byte buffer at *out. Reads only stable per-connection
+ * fields (c->quic, c->ssl->fp_ja4_version, fp_ja4_has_sni, fp_first_alpn);
+ * cipher and extension counts are passed in by the caller, since both
+ * raw_impl and impl already compute the capped values from variant-local
+ * source arrays.
+ *
+ * Same A-section is emitted by all four variants (sorted/original, raw/
+ * hashed) — see plan success criterion #2. Extracted so _impl no longer
+ * silently couples to the byte layout of raw->data produced by _raw_impl.
+ *
+ * Caller must guarantee out has NGX_SSL_JA4_A_LEN writable bytes.
+ */
+static void
+ngx_ssl_ja4_build_a(ngx_connection_t *c, u_char *out,
+    size_t cc_display, size_t ec_display)
+{
+    u_char       *p;
+    const char   *ver;
+    const u_char *alpn;
+
+    switch (c->ssl->fp_ja4_version) {
+    case 0x0304:
+        ver = "13";
+        break;
+    case 0x0303:
+        ver = "12";
+        break;
+    case 0x0302:
+        ver = "11";
+        break;
+    case 0x0301:
+        ver = "10";
+        break;
+    case 0x0300:
+        ver = "s3";
+        break;
+    default:
+        ver = "00";
+        break;
+    }
+
+    p = out;
+
+#if (NGX_QUIC || NGX_COMPAT)
+    *p++ = c->quic ? 'q' : 't';                    /* transport */
+#else
+    *p++ = 't';                                     /* transport */
+#endif
+    *p++ = ver[0];                                 /* version char 1 */
+    *p++ = ver[1];                                 /* version char 2 */
+    *p++ = c->ssl->fp_ja4_has_sni ? 'd' : 'i';    /* SNI */
+    *p++ = (u_char)('0' + (cc_display / 10));      /* cc tens */
+    *p++ = (u_char)('0' + (cc_display % 10));      /* cc ones */
+    *p++ = (u_char)('0' + (ec_display / 10));      /* ec tens */
+    *p++ = (u_char)('0' + (ec_display % 10));      /* ec ones */
+
+    /* ALPN first/last character */
+    alpn = c->ssl->fp_first_alpn;
+
+    if (alpn == NULL || alpn[0] == '\0') {
+        *p++ = '0';
+        *p++ = '0';
+    } else {
+        size_t  alen;
+        u_char  first_byte, last_byte;
+
+        alen = ngx_strlen(alpn);
+        first_byte = (u_char) alpn[0];
+        last_byte = (u_char) alpn[alen - 1];
+
+        if (ngx_ssl_ja4_is_alnum(first_byte)
+            && ngx_ssl_ja4_is_alnum(last_byte))
+        {
+            *p++ = first_byte;
+            *p++ = last_byte;
+        } else {
+            /* hex mode: first nibble of hex(first_byte),
+             *           last nibble of hex(last_byte) */
+            *p++ = hex[(first_byte >> 4) & 0x0F];
+            *p++ = hex[last_byte & 0x0F];
+        }
+    }
+}
+
+
+/*
  * Core raw-JA4 builder.
  *
  * Parameters:
@@ -257,7 +354,6 @@ ngx_ssl_ja4_raw_impl(ngx_connection_t *c, ngx_str_t *dst, ngx_uint_t original)
     uint16_t    *ciphers, *extensions;
     size_t       ciphers_sz, extensions_sz;
     u_char      *p;
-    const char  *ver;
     u_char       a_buf[NGX_SSL_JA4_A_LEN];
 
     /* per-variant cache check */
@@ -270,10 +366,10 @@ ngx_ssl_ja4_raw_impl(ngx_connection_t *c, ngx_str_t *dst, ngx_uint_t original)
         return NGX_DECLINED;
     }
 
-    /* Step 1: GREASE-filter shared arrays (idempotent) */
+    /* GREASE-filter shared arrays (idempotent) */
     ngx_ssl_ja4_grease_filter(c);
 
-    /* Step 2: select cipher / extension source by flag */
+    /* select cipher / extension source by flag */
     if (original) {
         ciphers       = c->ssl->fp_ja4_ciphers;
         extensions    = c->ssl->fp_ja4_extensions;
@@ -303,78 +399,13 @@ ngx_ssl_ja4_raw_impl(ngx_connection_t *c, ngx_str_t *dst, ngx_uint_t original)
         }
     }
 
-    /* Step 3: sigalgs (always original order, shared across variants) */
+    /* sigalgs (always original order, shared across variants) */
     sa_sz = c->ssl->fp_ja4_sigalgs_sz;
 
-    /* Step 4: Build _a section: t{ver}{sni}{cc}{ec}{alpn} */
+    /* Build _a section via shared helper (identical for all 4 variants) */
+    ngx_ssl_ja4_build_a(c, a_buf, cc_display, ec_display);
 
-    /* version mapping */
-    switch (c->ssl->fp_ja4_version) {
-    case 0x0304:
-        ver = "13";
-        break;
-    case 0x0303:
-        ver = "12";
-        break;
-    case 0x0302:
-        ver = "11";
-        break;
-    case 0x0301:
-        ver = "10";
-        break;
-    case 0x0300:
-        ver = "s3";
-        break;
-    default:
-        ver = "00";
-        break;
-    }
-
-    p = a_buf;
-
-#if (NGX_QUIC || NGX_COMPAT)
-    *p++ = c->quic ? 'q' : 't';                    /* transport */
-#else
-    *p++ = 't';                                     /* transport */
-#endif
-    *p++ = ver[0];                                 /* version char 1 */
-    *p++ = ver[1];                                 /* version char 2 */
-    *p++ = c->ssl->fp_ja4_has_sni ? 'd' : 'i';    /* SNI */
-    *p++ = (u_char)('0' + (cc_display / 10));      /* cc tens */
-    *p++ = (u_char)('0' + (cc_display % 10));      /* cc ones */
-    *p++ = (u_char)('0' + (ec_display / 10));      /* ec tens */
-    *p++ = (u_char)('0' + (ec_display % 10));      /* ec ones */
-
-    /* ALPN first/last character */
-    {
-        const u_char *alpn = c->ssl->fp_first_alpn;
-
-        if (alpn == NULL || alpn[0] == '\0') {
-            *p++ = '0';
-            *p++ = '0';
-        } else {
-            size_t  alen;
-            u_char  first_byte, last_byte;
-
-            alen = ngx_strlen(alpn);
-            first_byte = (u_char) alpn[0];
-            last_byte = (u_char) alpn[alen - 1];
-
-            if (ngx_ssl_ja4_is_alnum(first_byte)
-                && ngx_ssl_ja4_is_alnum(last_byte))
-            {
-                *p++ = first_byte;
-                *p++ = last_byte;
-            } else {
-                /* hex mode: first nibble of hex(first_byte),
-                 *           last nibble of hex(last_byte) */
-                *p++ = hex[(first_byte >> 4) & 0x0F];
-                *p++ = hex[last_byte & 0x0F];
-            }
-        }
-    }
-
-    /* Step 5: Build *dst: "{_a}_{cipher_list}_{ext_list}[_{sigalg_list}]" */
+    /* Build *dst: "{_a}_{cipher_list}_{ext_list}[_{sigalg_list}]" */
     {
         size_t  raw_len;
         size_t  cipher_list_len, ext_list_len, sigalg_list_len;
@@ -450,14 +481,14 @@ ngx_ssl_ja4_impl(ngx_connection_t *c, ngx_str_t *raw, ngx_str_t *dst,
 {
     int          rc;
     size_t       i;
-    size_t       ec_for_hash;
+    size_t       cc_display, ec_display, ec_for_hash;
     size_t       sa_sz;
     uint16_t    *ciphers, *extensions;
     size_t       ciphers_sz, extensions_sz;
     u_char      *p;
     u_char       a_buf[NGX_SSL_JA4_A_LEN];
-    u_char       cipher_hash[12];
-    u_char       ext_hash[12];
+    u_char       cipher_hash[NGX_SSL_JA4_HASH_HEX_LEN];
+    u_char       ext_hash[NGX_SSL_JA4_HASH_HEX_LEN];
 
     /* per-variant cache check */
     if (dst->data != NULL) {
@@ -469,9 +500,6 @@ ngx_ssl_ja4_impl(ngx_connection_t *c, ngx_str_t *raw, ngx_str_t *dst,
     if (rc != NGX_OK) {
         return rc;
     }
-
-    /* copy _a section from raw (they share the same _a section) */
-    ngx_memcpy(a_buf, raw->data, NGX_SSL_JA4_A_LEN);
 
     /* select cipher / extension source matching the raw path */
     if (original) {
@@ -485,6 +513,13 @@ ngx_ssl_ja4_impl(ngx_connection_t *c, ngx_str_t *raw, ngx_str_t *dst,
     extensions_sz = c->ssl->fp_ja4_extensions_sz;
     sa_sz = c->ssl->fp_ja4_sigalgs_sz;
 
+    /* display counts capped at 99 per spec; same for all 4 variants */
+    cc_display = (ciphers_sz > 99) ? 99 : ciphers_sz;
+    ec_display = (extensions_sz > 99) ? 99 : extensions_sz;
+
+    /* Build _a section independently of raw->data byte layout. */
+    ngx_ssl_ja4_build_a(c, a_buf, cc_display, ec_display);
+
     /* sorted-variant extension hash list excludes SNI/ALPN */
     ec_for_hash = 0;
     if (!original) {
@@ -497,9 +532,10 @@ ngx_ssl_ja4_impl(ngx_connection_t *c, ngx_str_t *raw, ngx_str_t *dst,
         }
     }
 
-    /* Step 6: Compute cipher_hash */
+    /* Compute cipher_hash */
     if (ciphers_sz == 0) {
-        ngx_memcpy(cipher_hash, "000000000000", 12);
+        ngx_memcpy(cipher_hash, NGX_SSL_JA4_EMPTY_HASH,
+                   NGX_SSL_JA4_HASH_HEX_LEN);
     } else {
         u_char  cipher_stack[NGX_SSL_JA4_HASH_BUF_SIZE];
         u_char *buf;
@@ -518,7 +554,7 @@ ngx_ssl_ja4_impl(ngx_connection_t *c, ngx_str_t *raw, ngx_str_t *dst,
         ngx_ssl_ja4_sha256_hex12(buf, buf_len, cipher_hash);
     }
 
-    /* Step 7: Compute ext_hash
+    /* Compute ext_hash
      *   sorted  -> list excludes SNI/ALPN (ec_for_hash entries)
      *   original -> list includes everything (extensions_sz entries) */
     {
@@ -527,7 +563,8 @@ ngx_ssl_ja4_impl(ngx_connection_t *c, ngx_str_t *raw, ngx_str_t *dst,
         ext_entries = original ? extensions_sz : ec_for_hash;
 
         if (ext_entries == 0) {
-            ngx_memcpy(ext_hash, "000000000000", 12);
+            ngx_memcpy(ext_hash, NGX_SSL_JA4_EMPTY_HASH,
+                       NGX_SSL_JA4_HASH_HEX_LEN);
         } else {
             u_char  ext_stack[NGX_SSL_JA4_HASH_BUF_SIZE];
             u_char *buf;
@@ -561,8 +598,9 @@ ngx_ssl_ja4_impl(ngx_connection_t *c, ngx_str_t *raw, ngx_str_t *dst,
         }
     }
 
-    /* Step 8: Build dst: "{_a}_{cipher_hash}_{ext_hash}" (36 bytes) */
-    dst->len = NGX_SSL_JA4_A_LEN + 1 + 12 + 1 + 12;
+    /* Build dst: "{_a}_{cipher_hash}_{ext_hash}" (36 bytes) */
+    dst->len = NGX_SSL_JA4_A_LEN + 1 + NGX_SSL_JA4_HASH_HEX_LEN
+               + 1 + NGX_SSL_JA4_HASH_HEX_LEN;
     dst->data = ngx_pnalloc(c->pool, dst->len);
     if (dst->data == NULL) {
         dst->len = 0;
@@ -572,9 +610,10 @@ ngx_ssl_ja4_impl(ngx_connection_t *c, ngx_str_t *raw, ngx_str_t *dst,
     p = dst->data;
     ngx_memcpy(p, a_buf, NGX_SSL_JA4_A_LEN);  p += NGX_SSL_JA4_A_LEN;
     *p++ = '_';
-    ngx_memcpy(p, cipher_hash, 12);  p += 12;
+    ngx_memcpy(p, cipher_hash, NGX_SSL_JA4_HASH_HEX_LEN);
+    p += NGX_SSL_JA4_HASH_HEX_LEN;
     *p++ = '_';
-    ngx_memcpy(p, ext_hash, 12);
+    ngx_memcpy(p, ext_hash, NGX_SSL_JA4_HASH_HEX_LEN);
 
     ngx_log_debug(NGX_LOG_DEBUG_EVENT, c->log, 0,
                   "ngx_ssl_ja4_impl(original=%ui): [%V], raw=[%V]",

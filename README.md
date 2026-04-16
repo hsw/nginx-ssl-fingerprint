@@ -45,7 +45,7 @@ http {
         ssl_certificate        cert.pem;
         ssl_certificate_key    priv.key;
         error_log              /dev/stderr debug;
-        return                 200 "ja3: $http_ssl_ja3\nja4: $http_ssl_ja4\nja4_r: $http_ssl_ja4_r\nh2fp: $http2_fingerprint";
+        return                 200 "ja3: $http_ssl_ja3\nja4: $http_ssl_ja4\nja4_r: $http_ssl_ja4_r\nja4_o: $http_ssl_ja4_o\nja4_ro: $http_ssl_ja4_ro\nh2fp: $http2_fingerprint";
     }
 }
 ```
@@ -71,7 +71,7 @@ stream {
         ssl_certificate        cert.pem;
         ssl_certificate_key    priv.key;
         error_log              /dev/stderr debug;
-        return                 "ja3: $stream_ssl_ja3\nja4: $stream_ssl_ja4\n";
+        return                 "ja3: $stream_ssl_ja3\nja4: $stream_ssl_ja4\nja4_r: $stream_ssl_ja4_r\nja4_o: $stream_ssl_ja4_o\nja4_ro: $stream_ssl_ja4_ro\n";
     }
 }
 ```

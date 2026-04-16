@@ -1,6 +1,6 @@
 
 /*
- * Obj: nginx_ssl_fingerprint.c
+ * Obj: nginx_ssl_fingerprint.c, nginx_ssl_ja4.c
  */
 
 #ifndef NGINX_SSL_FINGERPRINT_H_
