@@ -19,6 +19,10 @@ static ngx_int_t ngx_http_ssl_ja4(ngx_http_request_t *r,
                             ngx_http_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_http_ssl_ja4_r(ngx_http_request_t *r,
                             ngx_http_variable_value_t *v, uintptr_t data);
+static ngx_int_t ngx_http_ssl_ja4_o(ngx_http_request_t *r,
+                            ngx_http_variable_value_t *v, uintptr_t data);
+static ngx_int_t ngx_http_ssl_ja4_ro(ngx_http_request_t *r,
+                            ngx_http_variable_value_t *v, uintptr_t data);
 #endif /* NGX_SSL_JA4 */
 
 static ngx_http_module_t ngx_http_ssl_fingerprint_module_ctx = {
@@ -59,6 +63,10 @@ static ngx_http_variable_t ngx_http_ssl_fingerprint_variables_list[] = {
     {ngx_string("http_ssl_ja4"), NULL, ngx_http_ssl_ja4,
      0, 0, 0},
     {ngx_string("http_ssl_ja4_r"), NULL, ngx_http_ssl_ja4_r,
+     0, 0, 0},
+    {ngx_string("http_ssl_ja4_o"), NULL, ngx_http_ssl_ja4_o,
+     0, 0, 0},
+    {ngx_string("http_ssl_ja4_ro"), NULL, ngx_http_ssl_ja4_ro,
      0, 0, 0},
 #endif /* NGX_SSL_JA4 */
     ngx_http_null_variable
@@ -202,6 +210,76 @@ ngx_http_ssl_ja4_r(ngx_http_request_t *r,
 
     v->data = r->connection->ssl->fp_ja4_r.data;
     v->len = r->connection->ssl->fp_ja4_r.len;
+    v->not_found = 0;
+    v->valid = 1;
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_ssl_ja4_o(ngx_http_request_t *r,
+                 ngx_http_variable_value_t *v, uintptr_t data)
+{
+    ngx_int_t  rc;
+
+    /* For access.log's map $VAR {}:
+     * if it's not found, then user could add a defined string */
+    v->not_found = 1;
+
+    if (r->connection->ssl == NULL) {
+        return NGX_OK;
+    }
+
+    rc = ngx_ssl_ja4_o(r->connection);
+
+    /* NGX_DECLINED means no capture data — not an error, just
+     * no JA4 available.  Only log on a real NGX_ERROR. */
+    if (rc != NGX_OK) {
+        if (rc == NGX_ERROR) {
+            ngx_log_debug0(NGX_LOG_DEBUG_EVENT, r->connection->log, 0,
+                           "ssl fingerprint: ja4_o failed, "
+                           "$http_ssl_ja4_o not set");
+        }
+        return NGX_OK;
+    }
+
+    v->data = r->connection->ssl->fp_ja4_o.data;
+    v->len = r->connection->ssl->fp_ja4_o.len;
+    v->not_found = 0;
+    v->valid = 1;
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_ssl_ja4_ro(ngx_http_request_t *r,
+                 ngx_http_variable_value_t *v, uintptr_t data)
+{
+    ngx_int_t  rc;
+
+    /* For access.log's map $VAR {}:
+     * if it's not found, then user could add a defined string */
+    v->not_found = 1;
+
+    if (r->connection->ssl == NULL) {
+        return NGX_OK;
+    }
+
+    rc = ngx_ssl_ja4_raw_o(r->connection);
+
+    /* NGX_DECLINED means no capture data — not an error, just
+     * no JA4 available.  Only log on a real NGX_ERROR. */
+    if (rc != NGX_OK) {
+        if (rc == NGX_ERROR) {
+            ngx_log_debug0(NGX_LOG_DEBUG_EVENT, r->connection->log, 0,
+                           "ssl fingerprint: ja4_raw_o failed, "
+                           "$http_ssl_ja4_ro not set");
+        }
+        return NGX_OK;
+    }
+
+    v->data = r->connection->ssl->fp_ja4_ro.data;
+    v->len = r->connection->ssl->fp_ja4_ro.len;
     v->not_found = 0;
     v->valid = 1;
 
