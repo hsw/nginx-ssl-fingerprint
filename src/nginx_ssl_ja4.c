@@ -272,19 +272,19 @@ ngx_ssl_ja4_build_a(ngx_connection_t *c, u_char *out,
     const u_char *alpn;
 
     switch (c->ssl->fp_ja4_version) {
-    case 0x0304:
+    case TLS1_3_VERSION:
         ver = "13";
         break;
-    case 0x0303:
+    case TLS1_2_VERSION:
         ver = "12";
         break;
-    case 0x0302:
+    case TLS1_1_VERSION:
         ver = "11";
         break;
-    case 0x0301:
+    case TLS1_VERSION:
         ver = "10";
         break;
-    case 0x0300:
+    case SSL3_VERSION:
         ver = "s3";
         break;
     default:
