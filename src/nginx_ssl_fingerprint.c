@@ -199,7 +199,7 @@ unsigned char *append_uint32(unsigned char* dst, uint32_t n)
  */
 int ngx_ssl_ja3(ngx_connection_t *c)
 {
-    u_char *ptr = NULL, *data = NULL;
+    u_char *ptr = NULL, *data = NULL, *end = NULL;
     size_t num = 0, i;
     uint16_t n, greased = 0;
 
@@ -221,6 +221,8 @@ int ngx_ssl_ja3(ngx_connection_t *c)
         return NGX_OK;
     }
 
+    end = data + c->ssl->fp_ja_data.len;
+
     c->ssl->fp_ja3_str.len = c->ssl->fp_ja_data.len * 4;
     c->ssl->fp_ja3_str.data = ngx_pnalloc(c->pool, c->ssl->fp_ja3_str.len);
     if (c->ssl->fp_ja3_str.data == NULL) {
@@ -231,15 +233,24 @@ int ngx_ssl_ja3(ngx_connection_t *c)
 
     ngx_log_debug(NGX_LOG_DEBUG_EVENT, c->log, 0, "ngx_ssl_ja3: alloc bytes: [%d]\n", c->ssl->fp_ja3_str.len);
 
-    /* version */
+    /* version: 2 bytes */
+    if ((size_t)(end - data) < 2) {
+        goto error;
+    }
     ptr = c->ssl->fp_ja3_str.data;
     ptr = append_uint16(ptr, *(uint16_t*)data);
     *ptr++ = ',';
     data += 2;
 
-    /* ciphers */
+    /* ciphers: 2-byte length + num bytes of uint16 codes */
+    if ((size_t)(end - data) < 2) {
+        goto error;
+    }
     num = *(uint16_t*)data;
-    for (i = 2; i <= num; i += 2) {
+    if (num > (size_t)(end - data - 2)) {
+        goto error;
+    }
+    for (i = 2; i + 1 <= num; i += 2) {
         n = ((uint16_t)data[i]) << 8 | ((uint16_t)data[i+1]);
         if (!IS_GREASE_CODE(n)) {
             /* if (data[i] == 0x13) {
@@ -254,9 +265,15 @@ int ngx_ssl_ja3(ngx_connection_t *c)
     *(ptr-1) = ',';
     data += 2 + num;
 
-    /* extensions */
+    /* extensions: 2-byte length + num bytes of uint16 types */
+    if ((size_t)(end - data) < 2) {
+        goto error;
+    }
     num = *(uint16_t*)data;
-    for (i = 2; i <= num; i += 2) {
+    if (num > (size_t)(end - data - 2)) {
+        goto error;
+    }
+    for (i = 2; i + 1 <= num; i += 2) {
         n = *(uint16_t*)(data+i);
         if (!IS_GREASE_CODE(n)) {
             ptr = append_uint16(ptr, n);
@@ -268,11 +285,19 @@ int ngx_ssl_ja3(ngx_connection_t *c)
         data += 2 + num;
     } else {
         *(ptr++) = ',';
+        data += 2;
     }
 
 
-    /* groups */
+    /* groups: 2-byte length + num bytes total (inclusive of length itself
+     * per upstream convention — see `data += num` below, not `data += 2 + num`) */
+    if ((size_t)(end - data) < 2) {
+        goto error;
+    }
     num = *(uint16_t*)data;
+    if (num > (size_t)(end - data)) {
+        goto error;
+    }
     for (i = 2; i + 1 < num; i += 2) {
         n = ((uint16_t)data[i]) << 8 | ((uint16_t)data[i+1]);
         if (!IS_GREASE_CODE(n)) {
@@ -285,10 +310,17 @@ int ngx_ssl_ja3(ngx_connection_t *c)
         data += num;
     } else {
         *(ptr++) = ',';
+        data += 2;
     }
 
-    /* formats */
+    /* formats: 1-byte length + num-1 bytes of uint8 codes */
+    if ((size_t)(end - data) < 1) {
+        goto error;
+    }
     num = *(uint8_t*)data;
+    if (num > (size_t)(end - data)) {
+        goto error;
+    }
     for (i = 1; i < num; i++) {
         ptr = append_uint16(ptr, (uint16_t)data[i]);
         *ptr++ = '-';
@@ -308,6 +340,18 @@ int ngx_ssl_ja3(ngx_connection_t *c)
     ngx_log_debug(NGX_LOG_DEBUG_EVENT, c->log, 0, "ngx_ssl_ja3: ja3 str=[%V], len=[%d]", &c->ssl->fp_ja3_str, c->ssl->fp_ja3_str.len);
 
     return NGX_OK;
+
+error:
+
+    ngx_log_error(NGX_LOG_WARN, c->log, 0,
+            "ngx_ssl_ja3: truncated fp_ja_data at offset %uz, len=%uz",
+            (size_t)(data - c->ssl->fp_ja_data.data),
+            c->ssl->fp_ja_data.len);
+
+    c->ssl->fp_ja3_str.data = NULL;
+    c->ssl->fp_ja3_str.len = 0;
+
+    return NGX_ERROR;
 }
 
 /**
