@@ -93,7 +93,7 @@ index efe2290..2891bc6 100644
          }
      }
  
-+    if (!h2c->fp_fingerprinted && h2c->fp_priorities.len + 4 <= NGX_FP_V2_BUFFER_SIZE) {
++    if (priority && !h2c->fp_fingerprinted && h2c->fp_priorities.len + 4 <= NGX_FP_V2_BUFFER_SIZE) {
 +        h2c->fp_priorities.data[h2c->fp_priorities.len] = (uint8_t)stream->node->id;
 +        h2c->fp_priorities.data[h2c->fp_priorities.len+1] = (uint8_t)excl;
 +        h2c->fp_priorities.data[h2c->fp_priorities.len+2] = (uint8_t)depend;

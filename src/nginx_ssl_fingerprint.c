@@ -792,7 +792,7 @@ int ngx_http2_fingerprint(ngx_connection_t *c, ngx_http_v2_connection_t *h2c)
     }
 
     n = 4 + h2c->fp_settings.len * 3
-        + 10 + h2c->fp_priorities.len * 4
+        + 12 + h2c->fp_priorities.len * 4
         + h2c->fp_pseudoheaders.len * 2;
 
     h2c->fp_str.data = ngx_pnalloc(c->pool, n);
@@ -818,17 +818,22 @@ int ngx_http2_fingerprint(ngx_connection_t *c, ngx_http_v2_connection_t *h2c)
     *pstr++ = '|';
 
     /* priorities */
-    for (i = 0; i < h2c->fp_priorities.len; i+=4) {
-        pstr = append_uint8(pstr, h2c->fp_priorities.data[i]);
-        *pstr++ = ':';
-        pstr = append_uint8(pstr, h2c->fp_priorities.data[i+1]);
-        *pstr++ = ':';
-        pstr = append_uint8(pstr, h2c->fp_priorities.data[i+2]);
-        *pstr++ = ':';
-        pstr = append_uint16(pstr, (uint16_t)h2c->fp_priorities.data[i+3]+1);
-        *pstr++ = ',';
+    if (h2c->fp_priorities.len == 0) {
+        *pstr++ = '0';
+        *pstr++ = '|';
+    } else {
+        for (i = 0; i < h2c->fp_priorities.len; i+=4) {
+            pstr = append_uint8(pstr, h2c->fp_priorities.data[i]);
+            *pstr++ = ':';
+            pstr = append_uint8(pstr, h2c->fp_priorities.data[i+1]);
+            *pstr++ = ':';
+            pstr = append_uint8(pstr, h2c->fp_priorities.data[i+2]);
+            *pstr++ = ':';
+            pstr = append_uint16(pstr, (uint16_t)h2c->fp_priorities.data[i+3]+1);
+            *pstr++ = ',';
+        }
+        *(pstr-1) = '|';
     }
-    *(pstr-1) = '|';
 
     /* fp_pseudoheaders */
     for (i = 0; i < h2c->fp_pseudoheaders.len; i++) {
