@@ -66,6 +66,15 @@ stream {
 
 ## Quick Start
 
+### Requirements
+
+The module requires nginx configured with `--with-http_ssl_module` and
+`--with-http_v2_module`; `./auto/configure` fails fast with an explicit
+message otherwise (this applies even if you only use the stream variables).
+The stream module is included only when `--with-stream_ssl_module` is also
+given (together with static `--with-stream`; `--with-stream=dynamic` is not
+supported).
+
 ```bash
 
 # Clone
