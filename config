@@ -8,6 +8,13 @@ ngx_addon_name=ngx_ssl_fingerprint_module
 CORE_LIBS="$CORE_LIBS"
 CORE_INCS="$CORE_INCS $ngx_addon_dir/src"
 
+# defense-in-depth for non-nginx compile contexts (SAST, standalone-TU builds):
+# in nginx builds this has no observable effect -- ngx_event_openssl.h already
+# does "#define OPENSSL_SUPPRESS_DEPRECATED" (pulled via ngx_core.h) before any
+# OpenSSL header. empty value: plain -DOPENSSL_SUPPRESS_DEPRECATED would define
+# it as 1 and trip -Werror on macro redefinition against nginx's valueless define
+CFLAGS="$CFLAGS -DOPENSSL_SUPPRESS_DEPRECATED="
+
 if [ $HTTP != YES ]; then
   echo "$0: error: $ngx_addon_name requires the http module, do not use --without-http"
   exit 1
