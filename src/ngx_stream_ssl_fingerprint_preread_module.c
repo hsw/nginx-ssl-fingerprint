@@ -16,8 +16,8 @@ extern int ngx_ssl_ja4(ngx_connection_t *c);
 static ngx_int_t ngx_stream_ssl_fingerprint_preread_init(ngx_conf_t *cf);
 
 static ngx_stream_module_t  ngx_stream_ssl_fingerprint_preread_module_ctx = {
-    NULL,                                     /* preconfiguration */
-    ngx_stream_ssl_fingerprint_preread_init,          /* postconfiguration */
+    ngx_stream_ssl_fingerprint_preread_init,  /* preconfiguration */
+    NULL,                                     /* postconfiguration */
     NULL,                                     /* create main configuration */
     NULL,                                     /* init main configuration */
     NULL,                                     /* create server configuration */
@@ -182,27 +182,23 @@ static ngx_stream_variable_t  ngx_stream_ssl_fingerprint_variables_list[] = {
         0, 0, 0
     },
 
+    ngx_stream_null_variable
 };
 
 static ngx_int_t
 ngx_stream_ssl_fingerprint_preread_init(ngx_conf_t *cf)
 {
-    ngx_stream_variable_t          *v;
-    size_t                        l = 0;
-    size_t                        vars_len;
+    ngx_stream_variable_t  *var, *v;
 
-    vars_len = (sizeof(ngx_stream_ssl_fingerprint_variables_list) /
-            sizeof(ngx_stream_ssl_fingerprint_variables_list[0]));
+    for (v = ngx_stream_ssl_fingerprint_variables_list; v->name.len; v++) {
 
-    /* Register variables */
-    for (l = 0; l < vars_len ; ++l) {
-        v = ngx_stream_add_variable(cf,
-                &ngx_stream_ssl_fingerprint_variables_list[l].name,
-                ngx_stream_ssl_fingerprint_variables_list[l].flags);
-        if (v == NULL) {
-            continue;
+        var = ngx_stream_add_variable(cf, &v->name, v->flags);
+        if (var == NULL) {
+            return NGX_ERROR;
         }
-        *v = ngx_stream_ssl_fingerprint_variables_list[l];
+        /** NOTE: update it, if set_handler will be needed */
+        var->get_handler = v->get_handler;
+        var->data = v->data;
     }
 
     return NGX_OK;

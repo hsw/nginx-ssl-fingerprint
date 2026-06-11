@@ -14,7 +14,7 @@ stream_module=""
 
 if [ $STREAM_SSL = YES ]; then
   echo "[+] ngx_stream_ssl_fingerprint_preread_module included"
-  STREAM_MODULES="ngx_stream_ssl_fingerprint_preread_module $STREAM_MODULES"
+  STREAM_MODULES="$STREAM_MODULES ngx_stream_ssl_fingerprint_preread_module"
   stream_module="$ngx_addon_dir/src/ngx_stream_ssl_fingerprint_preread_module.c"
 else
   echo "[-] ngx_stream_ssl_fingerprint_preread_module will no be compiled"
