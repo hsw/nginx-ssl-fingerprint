@@ -417,7 +417,8 @@ int ngx_ssl_ja4(ngx_connection_t *c)
     enum {
         ngx_ssl_ja4_max_fields = 128,
         ngx_ssl_ja4_str_max_len = 38,
-        ngx_ssl_ja4_hex_hash_len = 12
+        ngx_ssl_ja4_hex_hash_len = 12,
+        ngx_ssl_ja4_max_count = 99
     };
 
     data = c->ssl->fp_ja_data.data;
@@ -782,11 +783,13 @@ int ngx_ssl_ja4(ngx_connection_t *c)
     if (cipher_count < 10) {
         *ptr++ = '0';
     }
-    ptr = append_uint8(ptr, (uint8_t) cipher_count);
+    ptr = append_uint8(ptr, (uint8_t) ngx_min(cipher_count,
+                                              ngx_ssl_ja4_max_count));
     if (exts_count_total < 10) {
         *ptr++ = '0';
     }
-    ptr = append_uint8(ptr, (uint8_t) exts_count_total);
+    ptr = append_uint8(ptr, (uint8_t) ngx_min(exts_count_total,
+                                              ngx_ssl_ja4_max_count));
     if (isalnum(alpn[0]) && isalnum(alpn[1])) {
         *ptr++ = alpn[0];
         *ptr++ = alpn[1];
