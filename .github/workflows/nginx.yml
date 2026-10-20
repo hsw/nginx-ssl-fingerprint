@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - master
+      - stable
   pull_request:
 
 jobs:
@@ -14,16 +15,19 @@ jobs:
     strategy:
       matrix:
         openssl: [openssl-3.5.6, openssl-3.6.2]
-        nginx: [release-1.29.8, release-1.30.0]
+        nginx: [release-1.29.8, release-1.30.0, release-1.31.2]
     steps:
       - name: Dependency
         run: |
           sudo apt update -y && sudo apt-get install -y libpcre3 libpcre3-dev
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          path: nginx-ssl-fingerprint
       - name: Clone
         run: |
           git clone -b ${{ matrix.openssl }} --depth=1 https://github.com/openssl/openssl
           git clone -b ${{ matrix.nginx }} --depth=1 https://github.com/nginx/nginx
-          git clone -b master https://github.com/${GITHUB_REPOSITORY}
       - name: Patch
         run: |
           patch -p1 -d openssl < nginx-ssl-fingerprint/patches/${{ matrix.openssl }}.patch
@@ -33,18 +37,25 @@ jobs:
           cd nginx
           ASAN_OPTIONS=symbolize=1 ./auto/configure --with-openssl=$(pwd)/../openssl --add-module=$(pwd)/../nginx-ssl-fingerprint --with-http_ssl_module --with-stream_ssl_module --with-debug --with-stream --with-http_v2_module --with-cc-opt="-fsanitize=address -O -fno-omit-frame-pointer -DNGX_DEBUG_PALLOC=1" --with-ld-opt="-L/usr/local/lib -Wl,-E -lasan"
           make -j$(nproc)
+      - name: Start nginx
+        run: |
+          nohup nginx/objs/nginx -p . -c nginx-ssl-fingerprint/nginx.conf </dev/null &>nginx.log &
+          sleep 2
+          pgrep nginx
       - name: Test HTTP module
         run: |
-          nohup nginx/objs/nginx -p . -c nginx-ssl-fingerprint/nginx.conf </dev/null &>nginx.log &
-          sleep 2
-          curl -kv https://127.0.0.1:4433
-          cat nginx.log
+          curl -kv -sSf -o http.txt https://127.0.0.1:4433
+          cat http.txt
+          grep -E '^ja3: [0-9]+,' http.txt
+          grep -E '^ja3_hash: [0-9a-f]{32}$' http.txt
+          grep -E '^ja4: t[0-9]{2}' http.txt
       - name: Test Stream module
         run: |
-          nohup nginx/objs/nginx -p . -c nginx-ssl-fingerprint/nginx.conf </dev/null &>nginx.log &
-          sleep 2
-          curl -kv https://127.0.0.1:4443
-          cat nginx.log
+          curl -kv -sSf -o stream.txt https://127.0.0.1:4443
+          cat stream.txt
+          grep -E '^ja3: [0-9]+,' stream.txt
+          grep -E '^ja3_hash: [0-9a-f]{32}$' stream.txt
+          grep -E '^ja4: t[0-9]{2}' stream.txt
       - name: Fuzzing
         run: |
           git clone https://github.com/tlsfuzzer/tlsfuzzer
@@ -55,5 +66,20 @@ jobs:
             PYTHONPATH=. venv/bin/python $file || true
             pgrep nginx
           done
+          for name in invalid-client-hello invalid-client-hello-w-record-overflow truncating-of-client-hello empty-extensions extensions large-hello large-number-of-extensions point-extension sig-algs alpn-negotiation tls13-unrecognised-groups; do
+            test -f scripts/test-$name.py
+            PYTHONPATH=. venv/bin/python scripts/test-$name.py -h 127.0.0.1 -p 4443 || true
+            pgrep nginx
+          done
           curl -kv -sSf https://127.0.0.1:4433
           curl -kv -sSf https://127.0.0.1:4443
+      - name: Check nginx
+        run: |
+          pgrep nginx
+          if grep -E -A 30 'AddressSanitizer|exited on signal|exited with code' nginx.log; then
+            exit 1
+          fi
+      - name: Show nginx log
+        if: failure()
+        run: |
+          tail -n 200 nginx.log 2>/dev/null || true
