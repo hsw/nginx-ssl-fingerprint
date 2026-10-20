@@ -309,6 +309,7 @@ int ngx_ssl_ja3(ngx_connection_t *c)
         data += num;
     } else {
         *(ptr++) = ',';
+        data += 2;
     }
 
     /* formats */
