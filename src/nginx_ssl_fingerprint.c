@@ -199,7 +199,7 @@ unsigned char *append_uint32(unsigned char* dst, uint32_t n)
  */
 int ngx_ssl_ja3(ngx_connection_t *c)
 {
-    u_char *ptr = NULL, *data = NULL;
+    u_char *ptr = NULL, *data = NULL, *end = NULL;
     size_t num = 0, i;
     uint16_t n, greased = 0;
 
@@ -221,6 +221,8 @@ int ngx_ssl_ja3(ngx_connection_t *c)
         return NGX_OK;
     }
 
+    end = data + c->ssl->fp_ja_data.len;
+
     c->ssl->fp_ja3_str.len = c->ssl->fp_ja_data.len * 4;
     c->ssl->fp_ja3_str.data = ngx_pnalloc(c->pool, c->ssl->fp_ja3_str.len);
     if (c->ssl->fp_ja3_str.data == NULL) {
@@ -232,13 +234,22 @@ int ngx_ssl_ja3(ngx_connection_t *c)
     ngx_log_debug(NGX_LOG_DEBUG_EVENT, c->log, 0, "ngx_ssl_ja3: alloc bytes: [%d]\n", c->ssl->fp_ja3_str.len);
 
     /* version */
+    if ((size_t) (end - data) < sizeof(uint16_t)) {
+        goto error;
+    }
     ptr = c->ssl->fp_ja3_str.data;
     ptr = append_uint16(ptr, *(uint16_t*)data);
     *ptr++ = ',';
     data += 2;
 
     /* ciphers */
+    if ((size_t) (end - data) < sizeof(uint16_t)) {
+        goto error;
+    }
     num = *(uint16_t*)data;
+    if (num > (size_t) (end - data) - sizeof(uint16_t)) {
+        goto error;
+    }
     for (i = 2; i <= num; i += 2) {
         n = ((uint16_t)data[i]) << 8 | ((uint16_t)data[i+1]);
         if (!IS_GREASE_CODE(n)) {
@@ -255,7 +266,13 @@ int ngx_ssl_ja3(ngx_connection_t *c)
     data += 2 + num;
 
     /* extensions */
+    if ((size_t) (end - data) < sizeof(uint16_t)) {
+        goto error;
+    }
     num = *(uint16_t*)data;
+    if (num > (size_t) (end - data) - sizeof(uint16_t)) {
+        goto error;
+    }
     for (i = 2; i <= num; i += 2) {
         n = *(uint16_t*)(data+i);
         if (!IS_GREASE_CODE(n)) {
@@ -272,7 +289,14 @@ int ngx_ssl_ja3(ngx_connection_t *c)
 
 
     /* groups */
+    if ((size_t) (end - data) < sizeof(uint16_t)) {
+        goto error;
+    }
     num = *(uint16_t*)data;
+    /* groups/formats lengths include their own prefix, ciphers/exts do not */
+    if (num == 1 || num > (size_t) (end - data)) {
+        goto error;
+    }
     for (i = 2; i + 1 < num; i += 2) {
         n = ((uint16_t)data[i]) << 8 | ((uint16_t)data[i+1]);
         if (!IS_GREASE_CODE(n)) {
@@ -285,10 +309,17 @@ int ngx_ssl_ja3(ngx_connection_t *c)
         data += num;
     } else {
         *(ptr++) = ',';
+        data += 2;
     }
 
     /* formats */
+    if ((size_t) (end - data) < sizeof(uint8_t)) {
+        goto error;
+    }
     num = *(uint8_t*)data;
+    if (num > (size_t) (end - data)) {
+        goto error;
+    }
     for (i = 1; i < num; i++) {
         ptr = append_uint16(ptr, (uint16_t)data[i]);
         *ptr++ = '-';
@@ -308,6 +339,18 @@ int ngx_ssl_ja3(ngx_connection_t *c)
     ngx_log_debug(NGX_LOG_DEBUG_EVENT, c->log, 0, "ngx_ssl_ja3: ja3 str=[%V], len=[%d]", &c->ssl->fp_ja3_str, c->ssl->fp_ja3_str.len);
 
     return NGX_OK;
+
+error:
+
+    ngx_log_error(NGX_LOG_WARN, c->log, 0,
+            "ngx_ssl_ja3: truncated fp_ja_data at offset %uz, len=%uz",
+            (size_t) (data - c->ssl->fp_ja_data.data),
+            c->ssl->fp_ja_data.len);
+
+    c->ssl->fp_ja3_str.data = NULL;
+    c->ssl->fp_ja3_str.len = 0;
+
+    return NGX_ERROR;
 }
 
 /**
@@ -374,7 +417,8 @@ int ngx_ssl_ja4(ngx_connection_t *c)
     enum {
         ngx_ssl_ja4_max_fields = 128,
         ngx_ssl_ja4_str_max_len = 38,
-        ngx_ssl_ja4_hex_hash_len = 12
+        ngx_ssl_ja4_hex_hash_len = 12,
+        ngx_ssl_ja4_max_count = 99
     };
 
     data = c->ssl->fp_ja_data.data;
@@ -739,11 +783,13 @@ int ngx_ssl_ja4(ngx_connection_t *c)
     if (cipher_count < 10) {
         *ptr++ = '0';
     }
-    ptr = append_uint8(ptr, (uint8_t) cipher_count);
+    ptr = append_uint8(ptr, (uint8_t) ngx_min(cipher_count,
+                                              ngx_ssl_ja4_max_count));
     if (exts_count_total < 10) {
         *ptr++ = '0';
     }
-    ptr = append_uint8(ptr, (uint8_t) exts_count_total);
+    ptr = append_uint8(ptr, (uint8_t) ngx_min(exts_count_total,
+                                              ngx_ssl_ja4_max_count));
     if (isalnum(alpn[0]) && isalnum(alpn[1])) {
         *ptr++ = alpn[0];
         *ptr++ = alpn[1];
