@@ -106,6 +106,12 @@ stream {
 }
 ```
 
+### Notes
+
+- Fingerprint variables (including `*_ssl_greased`) can be empty on a TLS connection too. This is a valid result, not an error: the ClientHello is too large for the capture buffer or malformed, ja4 sees more than 128 ciphers, extensions or signature algorithms, or a memory allocation failed.
+- ja3 includes `ec_point_formats` also when the client sends no `supported_groups` extension.
+- ja4 shows cipher and extension counts above 99 as 99, per the JA4 spec.
+
 
 ## Quick Start
 
