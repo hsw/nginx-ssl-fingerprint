@@ -13,6 +13,7 @@ A high performance nginx module for ja3 ja4 and http2 fingerprint.
 | nginx-1.29.8 |    ✅        |     ✅        |               |
 | nginx-1.30.0 |    ✅        |     ✅        |               |
 | nginx-1.30.7 |    ✅        |     ✅        |               |
+| nginx-1.31.2 |    ✅        |     ✅        |               |
 | nginx-1.31.7 |    ✅        |     ✅        |               |
 | nginx-1.31.9 |    ✅        |     ✅        |               |
 
