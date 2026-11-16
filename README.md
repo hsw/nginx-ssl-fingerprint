@@ -8,12 +8,16 @@ A high performance nginx module for ja3 ja4 and http2 fingerprint.
 
 ### Support Matrix
 
-|              | openssl-3.5.6 | openssl-3.6.2 | openssl-4.0.0 |
-| ------------ | ------------- | ------------- | ------------- |
-| nginx-1.29.8 |    ✅        |     ✅        |               |
-| nginx-1.30.0 |    ✅        |     ✅        |               |
-| nginx-1.31.2 |    ✅        |     ✅        |               |
-| nginx-1.31.7 |    ✅        |     ✅        |               |
+|              | openssl-3.5.6 | openssl-3.6.2 | openssl-4.0.0 | boringssl-0.20261105.0 | aws-lc-v5.14.0 |
+| ------------ | ------------- | ------------- | ------------- | ---------------------- | -------------- |
+| nginx-1.29.8 |    ✅        |     ✅        |               |                        |                |
+| nginx-1.30.0 |    ✅        |     ✅        |               |          ✅            |      ✅        |
+| nginx-1.31.2 |    ✅        |     ✅        |               |                        |                |
+| nginx-1.31.7 |    ✅        |     ✅        |               |          ✅            |      ✅        |
+
+BoringSSL and AWS-LC need no library patch, only the nginx one. The nginx-1.29.8
+and nginx-1.31.2 patches carry the same hooks, but only nginx-1.30.0 and
+nginx-1.31.7 are tested in CI on BoringSSL and AWS-LC.
 
 ## Configuration
 
@@ -97,6 +101,9 @@ stream {
 - Fingerprint variables (including `*_ssl_greased`) can be empty on a TLS connection too. This is a valid result, not an error: the ClientHello is too large for the capture buffer or malformed, ja4 sees more than 128 ciphers, extensions or signature algorithms, or a memory allocation failed.
 - ja3 includes `ec_point_formats` also when the client sends no `supported_groups` extension.
 - ja4 shows cipher and extension counts above 99 as 99, per the JA4 spec.
+- On AWS-LC no fingerprint is recorded when nginx rejects the handshake at SNI (e.g. `ssl_reject_handshake on`); OpenSSL and BoringSSL record one.
+- On BoringSSL and AWS-LC no fingerprint is recorded for a ClientHello that the library itself rejects before any callback (e.g. a malformed `server_name` or `encrypted_client_hello` extension); OpenSSL records one.
+- HTTP/3 is not yet tested (on any TLS library).
 
 
 ## Quick Start
@@ -141,6 +148,38 @@ $ cd tlsfuzzer
 $ python3 -m venv venv
 $ venv/bin/pip install --pre tlslite-ng
 $ PYTHONPATH=. venv/bin/python scripts/test-client-hello-max-size.py
+
+```
+
+### BoringSSL / AWS-LC
+
+No `--with-openssl` and no library patch: install the library into a prefix
+and point nginx at it. The library build needs cmake, ninja, go and perl.
+On these libraries the patched nginx links only together with the module.
+
+```bash
+
+# Clone (AWS-LC: git clone -b v5.14.0 --depth=1 https://github.com/aws/aws-lc tls)
+
+$ git clone -b 0.20261105.0 --depth=1 https://github.com/google/boringssl tls
+$ git clone -b release-1.31.7 --depth=1 https://github.com/nginx/nginx
+$ git clone -b master https://github.com/phuslu/nginx-ssl-fingerprint
+
+# Build the library
+
+$ cmake -S tls -B tls/build -GNinja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DCMAKE_INSTALL_PREFIX="$(pwd)/tls-install" -DCMAKE_INSTALL_LIBDIR=lib
+$ ninja -C tls/build
+$ cmake --install tls/build
+
+# Patch
+
+$ patch -p1 -d nginx < nginx-ssl-fingerprint/patches/release-1.31.7.patch
+
+# Build
+
+$ cd nginx
+$ ASAN_OPTIONS=symbolize=1 ./auto/configure --add-module="$(pwd)/../nginx-ssl-fingerprint" --with-http_ssl_module --with-stream_ssl_module --with-debug --with-stream --with-http_v2_module --with-cc-opt="-I$(pwd)/../tls-install/include -fsanitize=address -O -fno-omit-frame-pointer -DNGX_DEBUG_PALLOC=1" --with-ld-opt="-L$(pwd)/../tls-install/lib -Wl,-E -lasan -Wl,--start-group -lssl -lcrypto -lstdc++ -Wl,--end-group -lpthread"
+$ make
 
 ```
 
